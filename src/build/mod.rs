@@ -5,9 +5,8 @@
 
 mod ci;
 mod commands;
+pub mod xcode;
 mod xcode_dmg;
-
-pub use xcode_dmg::signing_identity;
 
 use crate::config::BuildStep;
 use crate::ctx::Ctx;
