@@ -68,6 +68,12 @@ pub fn require_clean_index() -> Result<()> {
 
 pub fn upstream(branch: &str) -> Result<String> {
     match sh::try_capture("git", &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) {
+        // A dev branch created by renaming the previous one keeps tracking
+        // the old remote branch; comparing against that would report every
+        // commit since as "unpushed".
+        Some(u) if !u.is_empty() && u != format!("origin/{branch}") => bail!(
+            "branch '{branch}' tracks '{u}' instead of 'origin/{branch}'. Run: git push -u origin {branch}"
+        ),
         Some(u) if !u.is_empty() => Ok(u),
         _ => bail!("branch '{branch}' has no upstream. Run: git push -u origin {branch}"),
     }

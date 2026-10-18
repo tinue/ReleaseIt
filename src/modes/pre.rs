@@ -11,7 +11,7 @@ use crate::changelog;
 use crate::config::BuildStep;
 use crate::ctx::{self, Ctx};
 use crate::git::{self, StashGuard};
-use crate::{appstore, gh};
+use crate::{appstore, gh, sh};
 use anyhow::{Context, Result, bail};
 
 pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
@@ -41,6 +41,21 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     println!("{} {}  (pre-release tag: {})", ctx.cfg.name, ctx.version, ctx.pre_tag);
     for c in &ctx.cfg.checks {
         ctx.shell(c)?;
+    }
+
+    // GitHub only dispatches a workflow whose file is on the default branch
+    // (`gh workflow run` gets a 404 otherwise). Catch that before the tag push.
+    for step in &ctx.cfg.build {
+        if let BuildStep::GithubDispatch { workflow, .. } = step
+            && !sh::succeeds("gh", &["workflow", "view", workflow])
+        {
+            bail!(
+                "GitHub can't dispatch {workflow}: it isn't on the default branch '{}' yet.\n  \
+                 GitHub only runs workflow_dispatch workflows whose file exists there; commit it to {} first.",
+                ctx.cfg.main_branch,
+                ctx.cfg.main_branch
+            );
+        }
     }
 
     if let Some(app) = &ctx.cfg.appstore {

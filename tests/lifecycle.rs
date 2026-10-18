@@ -28,6 +28,7 @@ case "$1 $2" in
     [ "$new" != "$tag" ] && rm "$GH_STATE/$tag.json"; true ;;
   "release upload") ;;
   "workflow run") ;;
+  "workflow view") if [ -e "$GH_STATE/no-workflow" ]; then exit 1; fi ;;
   "run list")
     echo "[{\"databaseId\":7,\"headSha\":\"old\",\"createdAt\":\"2000-01-01T00:00:00Z\"},{\"databaseId\":42,\"headSha\":\"$(git rev-parse HEAD)\",\"createdAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]" ;;
   "run watch") [ "$3" = 42 ] ;;
@@ -205,6 +206,12 @@ fn refuses_main_and_unpushed() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unpushed"));
 
+    // Renamed dev branch still tracking the previous version's remote branch.
+    git(&env.work, &["branch", "-m", "dev-0.2.0"]);
+    let out = release(&env, &["--yes"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("tracks 'origin/dev-0.1.0' instead of 'origin/dev-0.2.0'"));
+
     git(&env.work, &["checkout", "-q", "main"]);
     // main predates the release setup; give it the files untracked.
     fs::write(env.work.join("Cargo.toml"), "[package]\nversion = \"0.1.0\"\n").unwrap();
@@ -281,6 +288,26 @@ build:
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("app-windows"));
     assert!(!gh_log(&env).contains("release create"));
+}
+
+#[test]
+fn undispatchable_workflow_pushes_nothing() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+build:
+  - kind: github-dispatch
+    workflow: build.yml
+    artifacts: []
+"#,
+    );
+    fs::write(env.state.join("no-workflow"), "").unwrap();
+    let out = release(&env, &["--yes"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("isn't on the default branch"));
+    assert!(git(&env.remote, &["tag", "-l"]).is_empty(), "no -pre tag pushed");
 }
 
 #[test]

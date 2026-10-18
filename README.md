@@ -160,6 +160,11 @@ build:
     assets: ["build/distributions/*.zip"]
 ```
 
+A `github-dispatch` workflow must already exist on the main branch: GitHub
+only dispatches workflows whose file is on the default branch. `release`
+checks this before pushing the `-pre` tag. A new workflow therefore goes to
+main once by hand (then merge main back into the dev branch).
+
 `xcode-dmg` signs with `$SIGN_IDENTITY` or the first "Developer ID
 Application" identity in the keychain. Notarization credentials are stored
 once with:
