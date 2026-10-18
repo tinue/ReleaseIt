@@ -3,7 +3,7 @@ name = "releaseit"
 version = "0.1.0"
 edition = "2024"
 description = "Config-driven release tool: GitHub pre-releases, in-place promotion, next-cycle bump, Xcode DMG and App Store builds"
-license-file = "LICENSE"
+license = "GPL-3.0-only"
 
 [[bin]]
 name = "release"

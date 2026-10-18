@@ -219,4 +219,5 @@ cargo clippy --all-targets
 
 ## License
 
-[Polyform Noncommercial License 1.0.0](LICENSE).
+Copyright (C) 2026 Martin Erzberger. Licensed under the
+[GNU General Public License, version 3](LICENSE) (GPLv3).
