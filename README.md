@@ -8,6 +8,12 @@ candidates, promotion to the final release, and starting the next version.
 It replaces the per-project `bin/release` scripts that used to be copied from
 project to project and then drifted apart.
 
+> **Why this repository is public:** only because other public repositories
+> of mine release through it, and I want everything they depend on to be
+> transparently available. It is not meant to be useful for anyone else's
+> projects. There is no support: issues, discussions and pull requests are
+> not accepted.
+
 ## Install
 
 macOS only:
