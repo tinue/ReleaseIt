@@ -27,6 +27,12 @@ case "$1 $2" in
     echo "$j" | sed "s#https://x/$tag#https://x/$new#" > "$GH_STATE/$new.json"
     [ "$new" != "$tag" ] && rm "$GH_STATE/$tag.json"; true ;;
   "release upload") ;;
+  "workflow run") ;;
+  "run list")
+    echo "[{\"databaseId\":7,\"headSha\":\"old\",\"createdAt\":\"2000-01-01T00:00:00Z\"},{\"databaseId\":42,\"headSha\":\"$(git rev-parse HEAD)\",\"createdAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]" ;;
+  "run watch") [ "$3" = 42 ] ;;
+  "run download")
+    mkdir -p "$5/app-linux" && echo elf > "$5/app-linux/App-0.1.0.AppImage" ;;
   *) echo "fake gh: unsupported: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -45,7 +51,25 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+const DEFAULT_YAML: &str = r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+next: { bump: patch }
+release:
+  notes_suffix: "**Note**: suffix"
+  commit_trailer: "[skip ci]"
+build:
+  - kind: commands
+    run: ["mkdir -p dist && echo bin > dist/demo.bin"]
+    assets: ["dist/*.bin"]
+"#;
+
 fn setup() -> Env {
+    setup_with(DEFAULT_YAML)
+}
+
+fn setup_with(yaml: &str) -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let remote = tmp.path().join("origin.git");
     let work = tmp.path().join("work");
@@ -72,23 +96,9 @@ fn setup() -> Env {
     git(&work, &["checkout", "-q", "-b", "dev-0.1.0"]);
     fs::write(work.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n").unwrap();
     fs::write(work.join("CHANGELOG.md"), "# Changelog\n\n## [0.1.0] - WIP\n\n- **Feature** first\n").unwrap();
-    fs::write(
-        work.join("release.yaml"),
-        r#"
-name: Demo
-version: { preset: cargo }
-changelog: { wip_marker: WIP }
-next: { bump: patch }
-release:
-  notes_suffix: "**Note**: suffix"
-  commit_trailer: "[skip ci]"
-build:
-  - kind: commands
-    run: ["mkdir -p dist && echo bin > dist/demo.bin"]
-    assets: ["dist/*.bin"]
-"#,
-    )
-    .unwrap();
+    fs::write(work.join("release.yaml"), yaml).unwrap();
+    fs::create_dir_all(work.join("examples")).unwrap();
+    fs::write(work.join("examples/a.txt"), "a\n").unwrap();
     git(&work, &["add", "."]);
     git(&work, &["commit", "-q", "-m", "dev"]);
     git(&work, &["push", "-q", "-u", "origin", "dev-0.1.0"]);
@@ -216,4 +226,59 @@ fn refuses_when_main_has_unmerged_commits() {
     let out = release(&env, &["--yes"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("fast-forward"));
+}
+
+#[test]
+fn ci_dispatch_plus_local_step_publish_together() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+release:
+  extra_assets: [{ zip: examples/, as: Demo-examples.zip }]
+build:
+  - kind: commands
+    run: ["mkdir -p dist && echo bin > dist/demo.bin"]
+    assets: ["dist/*.bin"]
+  - kind: github-dispatch
+    workflow: build.yml
+    artifacts:
+      - { artifact: app-linux, file: "App-*.AppImage", as: Demo-linux.AppImage, executable: true }
+"#,
+    );
+    ok(&env, &["--yes"]);
+    let log = gh_log(&env);
+    // CI is dispatched before the local step runs, then everything goes up in one create.
+    let dispatch = log.find("workflow run build.yml --ref v0.1.0-pre").expect("dispatched");
+    let create = log.find("release create v0.1.0-pre").expect("created");
+    assert!(dispatch < create);
+    let create_line = log.lines().find(|l| l.starts_with("release create")).unwrap();
+    for name in ["demo.bin", "Demo-linux.AppImage", "Demo-examples.zip"] {
+        assert!(create_line.contains(name), "{name} missing: {create_line}");
+    }
+    assert!(log.contains("run watch 42"), "picked the run for HEAD, not the old one");
+    assert!(env.state.join("v0.1.0-pre.json").exists());
+    let json = fs::read_to_string(env.state.join("v0.1.0-pre.json")).unwrap();
+    assert!(json.contains("[1,2,3]"), "{json}");
+}
+
+#[test]
+fn missing_artifact_publishes_nothing() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+build:
+  - kind: github-dispatch
+    workflow: build.yml
+    artifacts:
+      - { artifact: app-windows, file: "*.exe", as: Demo.exe }
+"#,
+    );
+    let out = release(&env, &["--yes"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("app-windows"));
+    assert!(!gh_log(&env).contains("release create"));
 }
