@@ -8,6 +8,7 @@
 
 use crate::build::{self, Phase};
 use crate::changelog;
+use crate::config::BuildStep;
 use crate::ctx::{self, Ctx};
 use crate::git::{self, StashGuard};
 use crate::{appstore, gh};
@@ -74,8 +75,9 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     let work = tempfile::tempdir()?;
     let assets = build::run(ctx, Phase::Pre, &since, work.path())?;
 
-    if assets.is_empty() {
-        // A github-tag-push workflow published the release itself.
+    let ci_publishes = ctx.cfg.build.iter().any(|s| matches!(s, BuildStep::GithubTagPush { .. }));
+    if assets.is_empty() && ci_publishes {
+        // The github-tag-push workflow published the release itself.
         let Some(r) = gh::view(&ctx.pre_tag) else {
             bail!("the build finished but there is no GitHub release '{}'", ctx.pre_tag);
         };

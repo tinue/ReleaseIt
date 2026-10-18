@@ -40,10 +40,12 @@ pub fn publish_pre(ctx: &Ctx, assets: &[&str]) -> Result<()> {
             "gh",
             &["release", "edit", &ctx.pre_tag, "--title", &title, "--notes-file", notes_path, "--prerelease"],
         )?;
-        let mut args = vec!["release", "upload", &ctx.pre_tag];
-        args.extend_from_slice(assets);
-        args.push("--clobber");
-        ctx.run("gh", &args)?;
+        if !assets.is_empty() {
+            let mut args = vec!["release", "upload", &ctx.pre_tag];
+            args.extend_from_slice(assets);
+            args.push("--clobber");
+            ctx.run("gh", &args)?;
+        }
     } else {
         println!("Creating GitHub pre-release {}…", ctx.pre_tag);
         // --verify-tag: the tag was pushed already; never let gh invent one

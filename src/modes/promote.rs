@@ -35,7 +35,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     if !pre.is_prerelease {
         bail!("'{}' exists but is not a pre-release. Nothing to promote.", ctx.pre_tag);
     }
-    if pre.assets.is_empty() {
+    if pre.assets.is_empty() && !ctx.cfg.build.is_empty() {
         bail!("'{}' has no assets attached. Something went wrong building it.", ctx.pre_tag);
     }
     let pre_assets = pre.assets.len();

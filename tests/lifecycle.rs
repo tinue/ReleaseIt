@@ -282,3 +282,12 @@ build:
     assert!(String::from_utf8_lossy(&out.stderr).contains("app-windows"));
     assert!(!gh_log(&env).contains("release create"));
 }
+
+#[test]
+fn notes_only_release_without_build_steps() {
+    let env = setup_with("name: Demo\nversion: { preset: cargo }\nchangelog: { wip_marker: WIP }\n");
+    ok(&env, &["--yes", "--rc"]);
+    assert!(gh_log(&env).contains("release create v0.1.0-pre --title"));
+    ok(&env, &["--yes", "--release"]);
+    assert!(env.state.join("v0.1.0.json").exists());
+}

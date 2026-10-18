@@ -48,7 +48,8 @@ started there.
    (`## [X.Y.Z] - <wip_marker>` or a bare `## [X.Y.Z]`) with today's date,
    commits and pushes. A date already there is never overwritten.
 3. **`release --release`**, once the release candidate is good. Requires the
-   CHANGELOG entry to be dated and the pre-release to exist with assets.
+   CHANGELOG entry to be dated and the pre-release to exist (with assets, if
+   the project has build steps).
    Squash-merges the dev branch onto main as one commit (message: "Release
    vX.Y.Z" plus the CHANGELOG section), tags `vX.Y.Z` there, and retargets the
    pre-release onto that tag **in place** (`gh release edit --tag`): same
