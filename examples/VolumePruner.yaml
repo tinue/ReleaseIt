@@ -1,0 +1,19 @@
+# Release configuration for ReleaseIt's `release` command
+# (https://github.com/tinue/ReleaseIt).
+#
+# The DMG is built, Developer-ID-signed, notarized and stapled locally.
+# Prerequisites: Xcode selected, create-dmg (brew install create-dmg), gh,
+# a Developer ID Application identity in the keychain, and notarytool
+# credentials stored once with `xcrun notarytool store-credentials notarytool`.
+
+name: VolumePruner
+
+version:
+  preset: xcode
+  file: VolumePruner.xcodeproj/project.pbxproj
+
+build:
+  - kind: xcode-dmg
+    project: VolumePruner.xcodeproj
+    scheme: VolumePruner
+    export_options: bin/ExportOptions.plist

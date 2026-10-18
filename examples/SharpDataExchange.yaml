@@ -1,0 +1,40 @@
+# Release configuration for ReleaseIt's `release` command
+# (https://github.com/tinue/ReleaseIt).
+#
+# The cross-platform artifacts are built by .github/workflows/release.yml,
+# triggered by the "vX.Y.Z-pre" tag push; that workflow also publishes the
+# GitHub pre-release. The macOS job Developer-ID-signs + notarizes the
+# binaries and builds a notarized .pkg; it needs the APPLE_* repo secrets
+# described in .github/macos-signing.md.
+
+name: SharpDataExchange
+
+version:
+  preset: cargo
+
+changelog:
+  wip_marker: WIP
+  insert_next: after-unreleased
+  compare_links: https://github.com/tinue/SharpDataExchange
+
+next:
+  bump: patch
+  after_bump: ["cargo check --quiet"]   # refreshes Cargo.lock
+  extra_files: [Cargo.lock]
+
+checks:
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo build --release
+  - cargo test
+
+release:
+  # Pushing the real tag doesn't trigger release.yml (only "-pre" tags do),
+  # but the squash commit's push to main would still fire ci.yml on code the
+  # pre-release build already exercised.
+  commit_trailer: |-
+    skip-ci: identical to the already-built pre-release
+    [skip ci]
+
+build:
+  - kind: github-tag-push
+    workflow: release.yml

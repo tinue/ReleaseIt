@@ -1,0 +1,15 @@
+# ReleaseIt releases itself the same way: `release`, `release --rc`, ...
+# No binaries are published (install from source with ./install.sh); the
+# GitHub release carries the notes and the source archive.
+name: ReleaseIt
+
+version:
+  preset: cargo
+
+next:
+  after_bump: ["cargo check --quiet"]
+  extra_files: [Cargo.lock]
+
+checks:
+  - cargo clippy --all-targets -- -D warnings
+  - cargo test

@@ -342,6 +342,19 @@ build:
     }
 
     #[test]
+    fn examples_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let mut n = 0;
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            Config::parse(&text).unwrap_or_else(|err| panic!("{}: {err:#}", path.display()));
+            n += 1;
+        }
+        assert!(n >= 4);
+    }
+
+    #[test]
     fn regex_preset_needs_regex() {
         assert!(Config::parse("name: X\nversion: { preset: regex, file: f }\n").is_err());
     }
