@@ -97,7 +97,9 @@ pub fn find_run(workflow: &str, event: &str, sha: &str, since: &str) -> Result<u
 
 pub fn watch(run_id: u64, what: &str) -> Result<()> {
     let id = run_id.to_string();
-    if sh::run("gh", &["run", "watch", &id, "--exit-status"]).is_err() {
+    // 30 s, not gh's default 3 s: a CI run takes minutes, and a long queue
+    // would otherwise spend a large share of the hourly API quota.
+    if sh::run("gh", &["run", "watch", &id, "--exit-status", "--interval", "30"]).is_err() {
         bail!(
             "CI run {run_id} for {what} failed.\n  View logs:   gh run view {run_id} --log-failed\n  \
              Fix the problem, then re-run `release` to re-cut the pre-release."
