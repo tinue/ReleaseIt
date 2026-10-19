@@ -120,6 +120,7 @@ appstore:                        # optional; see "iOS / App Store"
   build_dir: build/release-ios
   screenshot_max_age_days: 60
   locale: en-US
+  notes_forbidden: [Windows, Linux]  # words the App Store notes must not contain
 ```
 
 Version presets: `xcode` reads the first `MARKETING_VERSION` and `--next`
@@ -192,6 +193,22 @@ appstore/
 ```
 
 One-time setup per clone: `git worktree add appstore appstore`.
+
+A CHANGELOG line can be limited to one set of notes with an HTML comment,
+which doesn't show where GitHub renders the markdown:
+
+```markdown
+- **Windows** New desktop app for Windows. <!-- appstore: skip -->
+- **iPad** Wording only for the App Store. <!-- appstore: only -->
+```
+
+`skip` lines go only into the GitHub release notes and the squash-merge
+message, `only` lines only into `whatsnew.txt`; unmarked lines go into both.
+A `### ` heading left without lines is dropped, and an unknown marker is an
+error. If the App Store text still contains a word from
+`appstore.notes_forbidden`, `release` stops and lists the lines (`--dry-run`
+warns), and `release ios --release` checks `whatsnew.txt` again before
+uploading it.
 
 - `release ios` archives for iOS, exports the IPA, validates it
   (`SKIP_VALIDATE=1` skips) and uploads it to TestFlight. Requires a macOS

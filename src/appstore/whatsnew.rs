@@ -6,7 +6,8 @@
 use crate::config::AppStoreCfg;
 use crate::ctx::{self, Ctx};
 use crate::sh;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use regex::Regex;
 
 /// Markdown → App Store plain text:
 /// "### Fixes" → blank line + "FIXES"; "- **Cat** text" → "• CAT: text";
@@ -68,14 +69,47 @@ fn backticks_to_quotes(s: &str) -> String {
         .join("\n")
 }
 
+/// The lines of `text` that contain one of `words` (case-insensitive, whole
+/// words).
+pub fn forbidden_lines<'a>(text: &'a str, words: &[String]) -> Vec<&'a str> {
+    if words.is_empty() {
+        return vec![];
+    }
+    let alternatives: Vec<String> = words.iter().map(|w| regex::escape(w)).collect();
+    let re = Regex::new(&format!(r"(?i)\b({})\b", alternatives.join("|"))).unwrap();
+    text.lines().filter(|l| re.is_match(l)).collect()
+}
+
+pub fn check_forbidden(text: &str, words: &[String]) -> Result<()> {
+    let hits = forbidden_lines(text, words);
+    if !hits.is_empty() {
+        bail!(
+            "the App Store release notes mention {} (appstore.notes_forbidden):\n  {}\n  \
+             Mark those CHANGELOG lines with <!-- appstore: skip --> (or reword them).",
+            words.join(", "),
+            hits.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
+/// `notes`: the CHANGELOG section already filtered for the App Store
+/// (`Ctx::appstore_notes`).
 pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
     let text = convert(notes);
     if ctx.dry_run {
         ctx::section("Draft App Store release notes (whatsnew.txt)");
         println!("{text}");
         ctx::end_section();
+        if let Err(e) = check_forbidden(&text, &app.notes_forbidden) {
+            println!("Warning: {e:#}");
+        }
         return Ok(());
     }
+    if text.is_empty() {
+        bail!("every line of the CHANGELOG entry is marked <!-- appstore: skip --> — nothing left for the App Store.");
+    }
+    check_forbidden(&text, &app.notes_forbidden)?;
     ctx::section("App Store release notes (whatsnew.txt)");
     println!("{text}");
     ctx::end_section();
@@ -103,6 +137,15 @@ pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_forbidden_words() {
+        let words = vec!["Windows".to_string(), "Linux".to_string()];
+        let text = "• DESKTOP: New app for windows and Linux\n• DISPLAY: Better\n• WINDOWSILL: not a whole word";
+        assert_eq!(forbidden_lines(text, &words), vec!["• DESKTOP: New app for windows and Linux"]);
+        assert!(forbidden_lines(text, &[]).is_empty());
+        assert!(check_forbidden("• DISPLAY: Better", &words).is_ok());
+    }
 
     #[test]
     fn converts() {

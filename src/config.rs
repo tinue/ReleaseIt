@@ -237,6 +237,11 @@ pub struct AppStoreCfg {
     pub screenshot_max_age_days: u64,
     #[serde(default = "default_locale")]
     pub locale: String,
+    /// Words that must not appear in the App Store notes (case-insensitive,
+    /// whole words), e.g. other platforms a reviewer would object to. A line
+    /// that should only go to GitHub carries `<!-- appstore: skip -->`.
+    #[serde(default)]
+    pub notes_forbidden: Vec<String>,
 }
 
 fn default_appstore_worktree() -> PathBuf {

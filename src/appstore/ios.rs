@@ -113,7 +113,7 @@ pub fn run(ctx: &Ctx, build_only: bool, release: bool) -> Result<()> {
                 ctx.tag
             );
         }
-        notes = ctx.notes()?;
+        notes = ctx.appstore_notes()?;
         if notes.is_empty() {
             bail!("no CHANGELOG entry for {}. Add one before releasing.", ctx.version);
         }
@@ -230,6 +230,8 @@ fn app_store_release(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Credentials
     ctx::section("What's New (whatsnew.txt)");
     println!("{whatsnew}");
     ctx::end_section();
+    // whatsnew.txt may have been edited by hand since `release` checked it.
+    super::whatsnew::check_forbidden(&whatsnew, &app.notes_forbidden)?;
     ctx.require_confirm("App metadata, release notes and screenshots updated and committed?")?;
 
     // Work against the build a previous TestFlight run uploaded, and make

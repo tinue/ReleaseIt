@@ -106,9 +106,15 @@ impl Ctx {
         std::fs::read_to_string(&p).with_context(|| format!("{} not found", self.cfg.changelog.file.display()))
     }
 
-    /// This version's CHANGELOG section body (may be empty).
+    /// This version's CHANGELOG section body for GitHub (release notes,
+    /// squash-merge message), without `appstore: only` lines. May be empty.
     pub fn notes(&self) -> Result<String> {
-        Ok(changelog::notes(&self.changelog_text()?, &self.version))
+        changelog::for_audience(&changelog::notes(&self.changelog_text()?, &self.version), changelog::Audience::GitHub)
+    }
+
+    /// The same section for the App Store, without `appstore: skip` lines.
+    pub fn appstore_notes(&self) -> Result<String> {
+        changelog::for_audience(&changelog::notes(&self.changelog_text()?, &self.version), changelog::Audience::AppStore)
     }
 
     /// Full GitHub release notes: CHANGELOG section + notes_suffix. Used for

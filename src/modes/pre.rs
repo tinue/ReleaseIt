@@ -59,7 +59,7 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     }
 
     if let Some(app) = &ctx.cfg.appstore {
-        appstore::whatsnew::publish(ctx, app, &notes)?;
+        appstore::whatsnew::publish(ctx, app, &ctx.appstore_notes()?)?;
     }
 
     ctx::section(&format!("Release notes for {} (from {})", ctx.pre_tag, ctx.cfg.changelog.file.display()));

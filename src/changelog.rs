@@ -115,6 +115,59 @@ pub fn insert_next(text: &str, cfg: &ChangelogCfg, current: &str, next: &str) ->
     Ok(out)
 }
 
+/// Which release notes a CHANGELOG section is filtered for. A line can carry
+/// an HTML comment that limits it to one of them — invisible wherever GitHub
+/// renders the markdown:
+///   `<!-- appstore: skip -->`  GitHub release notes only
+///   `<!-- appstore: only -->`  App Store "What's New" only
+/// Unmarked lines go into both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Audience {
+    GitHub,
+    AppStore,
+}
+
+/// `notes` (a section body, see `notes()`) for `audience`: the other
+/// audience's lines dropped, the markers removed, and "### " headings left
+/// without any line under them dropped. An unknown marker is an error rather
+/// than a line that silently goes everywhere.
+pub fn for_audience(notes: &str, audience: Audience) -> Result<String> {
+    let marker = Regex::new(r"\s*<!--\s*appstore:\s*([^\s>]*)\s*-->").unwrap();
+    let mut kept: Vec<String> = Vec::new();
+    for line in notes.lines() {
+        let mut keep = true;
+        for c in marker.captures_iter(line) {
+            match (&c[1], audience) {
+                ("skip", Audience::AppStore) | ("only", Audience::GitHub) => keep = false,
+                ("skip", _) | ("only", _) => {}
+                (other, _) => bail!(
+                    "unknown CHANGELOG marker '<!-- appstore: {other} -->' (use 'skip' or 'only'):\n  {line}"
+                ),
+            }
+        }
+        if keep {
+            kept.push(marker.replace_all(line, "").into_owned());
+        }
+    }
+    // Drop a heading whose section lost every line.
+    let mut out: Vec<String> = Vec::new();
+    for (i, line) in kept.iter().enumerate() {
+        if line.starts_with("### ") {
+            let has_items = kept[i + 1..]
+                .iter()
+                .take_while(|l| !l.starts_with("### "))
+                .any(|l| !l.trim().is_empty());
+            if !has_items {
+                continue;
+            }
+        }
+        out.push(line.clone());
+    }
+    let mut s = out.join("\n");
+    s.truncate(s.trim_end().len());
+    Ok(s)
+}
+
 /// Line-wise rewrite that keeps the file's trailing-newline state.
 fn map_lines(text: &str, mut f: impl FnMut(&str) -> Vec<String>) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -148,6 +201,24 @@ mod tests {
         // "1.8.0" must not match "1.8.01" or "1x8x0"
         assert_eq!(notes("## [1.8.01]\n- x\n", "1.8.0"), "");
         assert_eq!(notes("## [1x8x0]\n- x\n", "1.8.0"), "");
+    }
+
+    #[test]
+    fn filters_by_audience() {
+        let md = "- **A** all\n- **B** desktop <!-- appstore: skip -->\n- **C** iOS wording <!--appstore:only-->\n\n### Fixes\n- **D** desktop fix <!-- appstore: skip -->";
+        assert_eq!(
+            for_audience(md, Audience::GitHub).unwrap(),
+            "- **A** all\n- **B** desktop\n\n### Fixes\n- **D** desktop fix"
+        );
+        // The Fixes heading lost its only line.
+        assert_eq!(for_audience(md, Audience::AppStore).unwrap(), "- **A** all\n- **C** iOS wording");
+        assert_eq!(for_audience("- plain", Audience::AppStore).unwrap(), "- plain");
+    }
+
+    #[test]
+    fn unknown_marker_is_an_error() {
+        let err = for_audience("- x <!-- appstore: skipp -->", Audience::AppStore).unwrap_err();
+        assert!(err.to_string().contains("appstore: skipp"), "{err}");
     }
 
     #[test]
