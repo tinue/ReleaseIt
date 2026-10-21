@@ -8,11 +8,19 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub fn set_secret(ui: &Ui, name: &str, value: &[u8]) -> Result<()> {
-    ui.run_with_stdin("gh", &["secret", "set", name], value)
+    ui.run_with_stdin("gh", &["secret", "set", name], value)?;
+    if !ui.dry_run {
+        println!("secret {name} set");
+    }
+    Ok(())
 }
 
 pub fn set_variable(ui: &Ui, name: &str, value: &str) -> Result<()> {
-    ui.run("gh", &["variable", "set", name, "--body", value])
+    ui.run("gh", &["variable", "set", name, "--body", value])?;
+    if !ui.dry_run {
+        println!("variable {name} = {value}");
+    }
+    Ok(())
 }
 
 /// All repo variables, in one API call.
