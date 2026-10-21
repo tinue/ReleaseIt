@@ -239,30 +239,34 @@ guide` lists the steps. Use the portal with the **G2 Sub-CA**, not Xcode's
 Manage Certificates, which issued certificates from the original Sub-CA as
 late as October 2026. Everything after that is automated.
 
-Config, once, in `~/.config/releaseit/certs.yaml`:
+It runs in a project's repository root, like `release` (`-C DIR` works too),
+and takes its settings from a `certs:` section in that project's
+`release.yaml`:
 
 ```yaml
-team_id: ABCDE12345          # the certificate subject's OU must match
-repos: [owner/RepoOne, owner/RepoTwo]
-# min_days: 30               # refuse / flag certificates expiring sooner
-# secrets:                   # these are the defaults
-#   application: APPLE_CERT_APPLICATION_P12_BASE64
-#   installer:   APPLE_CERT_INSTALLER_P12_BASE64
-#   password:    APPLE_CERT_P12_PASSWORD
+certs:
+  team_id: ABCDE12345        # the certificate subject's OU must match
+  # min_days: 30             # refuse / flag certificates expiring sooner
+  # secrets:                 # these are the defaults
+  #   application: APPLE_CERT_APPLICATION_P12_BASE64
+  #   installer:   APPLE_CERT_INSTALLER_P12_BASE64
+  #   password:    APPLE_CERT_P12_PASSWORD
 ```
 
 - `renew-certs guide` explains the portal steps and offers to open Keychain
   Access and the portal.
 - `renew-certs status` lists the Developer ID identities in the keychain
-  (SHA-1, G2 or old CA, expiry) and what each repo's CI has. It exits with 1
+  (SHA-1, G2 or old CA, expiry) and what the repo's CI has. It exits with 1
   when a CI certificate expires within `min_days` or isn't recorded yet.
 - `renew-certs apply [--password PW]` picks the latest G2 identity of each
   type from the keychain and exports it (macOS asks once per key to allow the
   export). It then checks the type, team, G2 issuer, remaining validity and
   that it doesn't expire earlier than what CI has (`--force` overrides).
-  After a confirmation it sets the secrets in every repo, records
+  After a confirmation it sets the repo's secrets, records
   `…_SHA1`/`…_EXPIRES` repo variables for `status`, and offers to delete the
-  superseded identities from the keychain.
+  superseded identities from the keychain. Run it once in every project with
+  a `certs:` section; the certificates stay in the keychain until you delete
+  them, so the same pair serves every project.
 
 The password comes from `--password`, `$RENEW_CERTS_P12_PASSWORD`, or a
 prompt. It goes to openssl and `gh` through the environment and stdin, never

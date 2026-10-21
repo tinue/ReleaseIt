@@ -1,4 +1,4 @@
-# Release configuration for ReleaseIt's `release` command
+# Release configuration for ReleaseIt's `release` and `renew-certs` commands
 # (https://github.com/tinue/ReleaseIt).
 #
 # The cross-platform artifacts are built by .github/workflows/release.yml,
@@ -38,3 +38,8 @@ release:
 build:
   - kind: github-tag-push
     workflow: release.yml
+
+# Developer ID certificates the macOS CI job signs with; rotated yearly with
+# ReleaseIt's `renew-certs` (see .github/macos-signing.md).
+certs:
+  team_id: 7Q3QN9AV9J

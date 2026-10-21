@@ -28,6 +28,48 @@ pub struct Config {
     #[serde(default)]
     pub build: Vec<BuildStep>,
     pub appstore: Option<AppStoreCfg>,
+    /// Developer ID certificates CI signs with. Only `renew-certs` reads it;
+    /// `release` parses it so that `deny_unknown_fields` still applies.
+    #[allow(dead_code)]
+    pub certs: Option<CertsCfg>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read by renew-certs
+pub struct CertsCfg {
+    /// Apple team ID; the certificate subject's OU must match.
+    pub team_id: String,
+    /// Refuse (and `renew-certs status` flags) certificates expiring within
+    /// this many days.
+    #[serde(default = "default_min_days")]
+    pub min_days: i64,
+    #[serde(default)]
+    pub secrets: CertSecrets,
+}
+
+/// Names of the repo secrets the CI workflow imports the certificates from.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+#[allow(dead_code)] // read by renew-certs
+pub struct CertSecrets {
+    pub application: String,
+    pub installer: String,
+    pub password: String,
+}
+
+impl Default for CertSecrets {
+    fn default() -> Self {
+        Self {
+            application: "APPLE_CERT_APPLICATION_P12_BASE64".into(),
+            installer: "APPLE_CERT_INSTALLER_P12_BASE64".into(),
+            password: "APPLE_CERT_P12_PASSWORD".into(),
+        }
+    }
+}
+
+fn default_min_days() -> i64 {
+    30
 }
 
 fn default_main_branch() -> String {
@@ -339,6 +381,15 @@ build:
         .unwrap();
         assert_eq!(cfg.build.len(), 2);
         assert_eq!(cfg.xcode_dmg().unwrap().notary_profile, "notarytool");
+    }
+
+    #[test]
+    fn certs_section() {
+        let cfg = Config::parse("name: X\nversion: { preset: cargo }\ncerts: { team_id: T }\n").unwrap();
+        let certs = cfg.certs.unwrap();
+        assert_eq!(certs.min_days, 30);
+        assert_eq!(certs.secrets.installer, "APPLE_CERT_INSTALLER_P12_BASE64");
+        assert!(Config::parse("name: X\nversion: { preset: cargo }\ncerts: { team_id: T, repos: [] }\n").is_err());
     }
 
     #[test]

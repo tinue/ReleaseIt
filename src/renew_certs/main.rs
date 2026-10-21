@@ -1,7 +1,10 @@
-//! `renew-certs` — rotate the Developer ID signing certificates that CI
-//! signs and notarizes with. See README.md.
+//! `renew-certs` — rotate the Developer ID signing certificates that a
+//! project's CI signs and notarizes with. Configured in the `certs:` section
+//! of the project's release.yaml. See README.md.
 
 mod cert;
+#[path = "../config.rs"]
+#[allow(dead_code)]
 mod config;
 mod github;
 mod keychain;
@@ -15,24 +18,33 @@ use base64::Engine;
 use cert::{CertInfo, KINDS, Kind, Rules};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use config::Config;
+use config::{CertsCfg, Config};
 use keychain::Keychain;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 const PASSWORD_ENV: &str = "RENEW_CERTS_P12_PASSWORD";
+const CERTS_SAMPLE: &str = "\
+certs:
+  team_id: ABCDE12345     # Apple team ID (the certificate subject's OU)
+  # min_days: 30
+  # secrets:              # defaults:
+  #   application: APPLE_CERT_APPLICATION_P12_BASE64
+  #   installer:   APPLE_CERT_INSTALLER_P12_BASE64
+  #   password:    APPLE_CERT_P12_PASSWORD
+";
 const PORTAL_URL: &str = "https://developer.apple.com/account/resources/certificates/add";
 
 /// Rotate the Developer ID certificates in CI:
 ///   renew-certs guide     how to create new certificates (manual, once a year)
-///   renew-certs status    keychain identities and what each repo's CI has
-///   renew-certs apply     export from the keychain, check, set the repo secrets
+///   renew-certs status    keychain identities and what this repo's CI has
+///   renew-certs apply     export from the keychain, check, set this repo's secrets
 #[derive(Parser)]
 #[command(name = "renew-certs", disable_version_flag = true, verbatim_doc_comment)]
 struct Cli {
-    /// Config file (default: ~/.config/releaseit/certs.yaml).
-    #[arg(long, global = true, value_name = "FILE")]
-    config: Option<PathBuf>,
+    /// Run as if started in this directory.
+    #[arg(short = 'C', global = true, value_name = "DIR")]
+    dir: Option<PathBuf>,
     /// Keychain to use instead of the default search list / login keychain.
     #[arg(long, global = true, value_name = "FILE")]
     keychain: Option<PathBuf>,
@@ -52,7 +64,7 @@ enum Cmd {
     Guide,
     /// List keychain identities and the certificates CI uses; exit 1 if CI's expire soon.
     Status,
-    /// Upload new certificates to every configured repo.
+    /// Upload new certificates to this repo's secrets.
     Apply {
         /// Password for the .p12s CI imports (else $RENEW_CERTS_P12_PASSWORD, else prompt).
         #[arg(long)]
@@ -124,10 +136,16 @@ fn real_main() -> Result<i32> {
         guide(&ui)?;
         return Ok(0);
     }
-    let cfg = Config::load(&match cli.config {
-        Some(p) => p,
-        None => Config::default_path()?,
-    })?;
+    if let Some(dir) = &cli.dir {
+        std::env::set_current_dir(dir).with_context(|| format!("cannot cd to {}", dir.display()))?;
+    }
+    let root = PathBuf::from(
+        sh::try_capture("git", &["rev-parse", "--show-toplevel"]).context("not inside a git repository")?,
+    );
+    std::env::set_current_dir(&root)?;
+    let cfg = Config::load(&root)?
+        .certs
+        .with_context(|| format!("no `certs:` section in {}. Add e.g.:\n\n{CERTS_SAMPLE}", config::FILE_NAME))?;
     github::require()?;
     match cli.cmd {
         Cmd::Guide => unreachable!(),
@@ -165,7 +183,9 @@ Developer ID certificates from the G2 Sub-CA are valid ~13 months. To renew:
 
 4. renew-certs status   — the new identities show as G2
    renew-certs apply    — exports them (macOS asks to allow the key export),
-                          checks them and sets the secrets in every repo.
+                          checks them and sets the secrets. Run it in the
+                          root of every project whose release.yaml has a
+                          `certs:` section.
 
 Old certificates can simply expire; Developer ID certificates can't be
 revoked in the portal, and already-notarized releases stay valid."
@@ -177,16 +197,32 @@ revoked in the portal, and already-notarized releases stay valid."
     Ok(())
 }
 
-/// What a repo's CI holds for `kind`, from the repo variables.
+fn secret_name(cfg: &CertsCfg, kind: Kind) -> &str {
+    match kind {
+        Kind::Application => &cfg.secrets.application,
+        Kind::Installer => &cfg.secrets.installer,
+    }
+}
+
+/// Repo variables recording what a secret currently holds, so `status` can
+/// report it (secrets can't be read back):
+/// APPLE_CERT_APPLICATION_P12_BASE64 → APPLE_CERT_APPLICATION_SHA1 / _EXPIRES.
+fn variables(cfg: &CertsCfg, kind: Kind) -> (String, String) {
+    let s = secret_name(cfg, kind);
+    let base = s.strip_suffix("_P12_BASE64").unwrap_or(s);
+    (format!("{base}_SHA1"), format!("{base}_EXPIRES"))
+}
+
+/// What the repo's CI holds for `kind`, from the repo variables.
 struct CiCert {
     sha1: String,
     expires: DateTime<Utc>,
 }
 
-fn ci_cert(cfg: &Config, repo: &str, kind: Kind) -> Option<CiCert> {
-    let (sha_var, exp_var) = cfg.variables(kind);
-    let sha1 = github::variable(repo, &sha_var)?;
-    let expires = DateTime::parse_from_rfc3339(&github::variable(repo, &exp_var)?).ok()?.with_timezone(&Utc);
+fn ci_cert(cfg: &CertsCfg, kind: Kind) -> Option<CiCert> {
+    let (sha_var, exp_var) = variables(cfg, kind);
+    let sha1 = github::variable(&sha_var)?;
+    let expires = DateTime::parse_from_rfc3339(&github::variable(&exp_var)?).ok()?.with_timezone(&Utc);
     Some(CiCert { sha1, expires })
 }
 
@@ -194,13 +230,8 @@ fn days_left(t: DateTime<Utc>) -> i64 {
     (t - Utc::now()).num_days()
 }
 
-fn status(cfg: &Config, kc: &Keychain) -> Result<i32> {
-    let mut ci = Vec::new();
-    for repo in &cfg.repos {
-        for kind in KINDS {
-            ci.push((repo.as_str(), kind, ci_cert(cfg, repo, kind)));
-        }
-    }
+fn status(cfg: &CertsCfg, kc: &Keychain) -> Result<i32> {
+    let ci: Vec<(Kind, Option<CiCert>)> = KINDS.into_iter().map(|k| (k, ci_cert(cfg, k))).collect();
 
     section("Keychain");
     let ids = kc.identities()?;
@@ -209,26 +240,22 @@ fn status(cfg: &Config, kc: &Keychain) -> Result<i32> {
     }
     for kind in KINDS {
         for id in ids.iter().filter(|i| i.info.kind == Some(kind)) {
-            let used: Vec<&str> = ci
-                .iter()
-                .filter(|(_, k, c)| *k == kind && c.as_ref().is_some_and(|c| c.sha1 == id.info.sha1))
-                .map(|(r, _, _)| *r)
-                .collect();
+            let used = ci.iter().any(|(k, c)| *k == kind && c.as_ref().is_some_and(|c| c.sha1 == id.info.sha1));
             let team = if id.info.team == cfg.team_id { String::new() } else { format!("  team {}", id.info.team) };
-            let ci_note = if used.is_empty() { String::new() } else { format!("  ← CI: {}", used.join(", ")) };
+            let ci_note = if used { "  ← CI" } else { "" };
             println!("{:<26} {}{team}{}{ci_note}", kind.name(), id.info.describe(), expiry_note(id.info.not_after));
         }
     }
 
-    section("CI");
+    section("CI (repo variables)");
     let mut attention = false;
-    for (repo, kind, c) in &ci {
+    for (kind, c) in &ci {
         match c {
             Some(c) => {
                 let days = days_left(c.expires);
                 attention |= days < cfg.min_days;
                 println!(
-                    "{repo:<28} {:<26} {}…  expires {}{}",
+                    "{:<26} {}…  expires {}{}",
                     kind.name(),
                     &c.sha1[..8.min(c.sha1.len())],
                     c.expires.format("%Y-%m-%d"),
@@ -237,7 +264,7 @@ fn status(cfg: &Config, kc: &Keychain) -> Result<i32> {
             }
             None => {
                 attention = true;
-                println!("{repo:<28} {:<26} unknown (not recorded by renew-certs)", kind.name());
+                println!("{:<26} unknown (not recorded by renew-certs)", kind.name());
             }
         }
     }
@@ -275,7 +302,7 @@ struct Renewal {
 
 fn apply(
     ui: &Ui,
-    cfg: &Config,
+    cfg: &CertsCfg,
     kc: &Keychain,
     password: Option<String>,
     files: Vec<(Kind, PathBuf)>,
@@ -319,7 +346,7 @@ fn apply(
         let info = p12::inspect(&p12, &pw).with_context(|| {
             format!("{}{}", kind.name(), file.as_ref().map(|f| format!(" ({})", f.display())).unwrap_or_default())
         })?;
-        let ci_expires = cfg.repos.iter().filter_map(|r| ci_cert(cfg, r, kind)).map(|c| c.expires).max();
+        let ci_expires = ci_cert(cfg, kind).map(|c| c.expires);
         if ci_expires.is_none() {
             println!("  note: no {} recorded for CI yet; skipping the downgrade check", kind.name());
         }
@@ -333,7 +360,6 @@ fn apply(
     for r in &renewals {
         println!("{:<26} {}  {}", r.kind.name(), r.info.describe(), r.info.common_name);
     }
-    println!("Repos: {}", cfg.repos.join(", "));
     if !both {
         println!(
             "Only one certificate: {} is left unchanged, so this .p12 must use the password CI already has.",
@@ -346,18 +372,16 @@ fn apply(
 
     // 5. Secrets + variables.
     section("GitHub");
-    for repo in &cfg.repos {
-        for r in &renewals {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&r.p12);
-            secret(ui, repo, cfg.secret(r.kind), b64.as_bytes())?;
-            let (sha_var, exp_var) = cfg.variables(r.kind);
-            let expires = r.info.not_after.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            ui.run("gh", &github::set_variable_args(repo, &sha_var, &r.info.sha1))?;
-            ui.run("gh", &github::set_variable_args(repo, &exp_var, &expires))?;
-        }
-        if both {
-            secret(ui, repo, &cfg.secrets.password, pw.as_bytes())?;
-        }
+    for r in &renewals {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&r.p12);
+        secret(ui, secret_name(cfg, r.kind), b64.as_bytes())?;
+        let (sha_var, exp_var) = variables(cfg, r.kind);
+        let expires = r.info.not_after.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        ui.run("gh", &github::set_variable_args(&sha_var, &r.info.sha1))?;
+        ui.run("gh", &github::set_variable_args(&exp_var, &expires))?;
+    }
+    if both {
+        secret(ui, &cfg.secrets.password, pw.as_bytes())?;
     }
 
     // 6.+7. File input: keep the identity on this Mac, remove the export.
@@ -384,21 +408,23 @@ fn apply(
     cleanup(ui, cfg, kc, &renewals)
 }
 
-fn secret(ui: &Ui, repo: &str, name: &str, value: &[u8]) -> Result<()> {
+fn secret(ui: &Ui, name: &str, value: &[u8]) -> Result<()> {
     if ui.dry_run {
-        println!("[dry-run] gh secret set {name} -R {repo}  ({} bytes on stdin)", value.len());
+        println!("[dry-run] gh secret set {name}  ({} bytes on stdin)", value.len());
         return Ok(());
     }
-    github::set_secret(repo, name, value)?;
-    println!("{repo}: {name} set");
+    github::set_secret(name, value)?;
+    println!("{name} set");
     Ok(())
 }
 
-fn cleanup(ui: &Ui, cfg: &Config, kc: &Keychain, renewals: &[Renewal]) -> Result<()> {
-    let referenced: Vec<String> = cfg
-        .repos
-        .iter()
-        .flat_map(|r| KINDS.into_iter().filter_map(move |k| ci_cert(cfg, r, k)))
+/// Offer to delete superseded identities from the keychain. CI is unaffected
+/// either way (it imports its own copy from the secret); other projects
+/// renew from the newest identity, which is never offered.
+fn cleanup(ui: &Ui, cfg: &CertsCfg, kc: &Keychain, renewals: &[Renewal]) -> Result<()> {
+    let referenced: Vec<String> = KINDS
+        .into_iter()
+        .filter_map(|k| ci_cert(cfg, k))
         .map(|c| c.sha1)
         .chain(renewals.iter().map(|r| r.info.sha1.clone()))
         .collect();
@@ -432,4 +458,25 @@ fn cleanup(ui: &Ui, cfg: &Config, kc: &Keychain, renewals: &[Renewal]) -> Result
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variable_names_follow_the_secret_names() {
+        let cfg = Config::parse("name: X\nversion: { preset: cargo }\ncerts: { team_id: T }\n").unwrap().certs.unwrap();
+        assert_eq!(secret_name(&cfg, Kind::Installer), "APPLE_CERT_INSTALLER_P12_BASE64");
+        assert_eq!(
+            variables(&cfg, Kind::Application),
+            ("APPLE_CERT_APPLICATION_SHA1".into(), "APPLE_CERT_APPLICATION_EXPIRES".into())
+        );
+    }
+
+    #[test]
+    fn sample_parses() {
+        let yaml = format!("name: X\nversion: {{ preset: cargo }}\n{CERTS_SAMPLE}");
+        assert_eq!(Config::parse(&yaml).unwrap().certs.unwrap().team_id, "ABCDE12345");
+    }
 }
