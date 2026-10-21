@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # macOS-only: builds the release binary and installs it to ~/Applications
-# (which is on PATH), as `release`.
+# (which is on PATH), as `release` and `renew-certs`.
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -15,6 +15,7 @@ cargo build --release
 
 install_dir="$HOME/Applications"
 mkdir -p "$install_dir"
-cp "target/release/release" "$install_dir/release"
-
-echo "Installed $install_dir/release"
+for bin in release renew-certs; do
+    cp "target/release/$bin" "$install_dir/$bin"
+    echo "Installed $install_dir/$bin"
+done
