@@ -1,7 +1,8 @@
 //! `renew-certs` end to end: a git repo with a release.yaml `certs:` section,
-//! a fake `gh` that keeps secrets and variables in files, a throwaway
-//! keychain, and test certificates from tests/fixtures/certs (issued by fake
-//! "G2" and old-style CAs for team TESTTEAM01).
+//! a fake `gh` that keeps secrets and variables in files, a fake `op` that
+//! keeps 1Password items in directories, and a throwaway keychain holding
+//! test identities from tests/fixtures/certs (issued by fake "G2" and
+//! old-style CAs for team TESTTEAM01).
 
 mod common;
 
@@ -29,19 +30,61 @@ case "$1 $2" in
 esac
 "#;
 
+/// Items are directories $OP_STATE/<id>/ with title, password, vault, tags
+/// and (once attached) file; every call goes to $OP_STATE/log.
+const FAKE_OP: &str = r#"#!/bin/bash
+echo "$*" >> "$OP_STATE/log"
+item() {  # JSON of item $1
+  d="$OP_STATE/$1"; files='[]'; [ -f "$d/file" ] && files='[{"id":"f1","name":"x.p12"}]'
+  printf '{"id":"%s","title":"%s","fields":[{"id":"password","value":"%s"}],"files":%s}' \
+    "$1" "$(cat "$d/title")" "$(cat "$d/password")" "$files"
+}
+case "$1 $2" in
+  "item list")
+    sep=; printf '['
+    for d in "$OP_STATE"/*/; do
+      [ -f "$d/title" ] || continue; id=$(basename "$d")
+      printf '%s{"id":"%s","title":"%s"}' "$sep" "$id" "$(cat "$d/title")"; sep=,
+    done
+    printf ']' ;;
+  "item create")
+    id=item$(ls -d "$OP_STATE"/item* 2>/dev/null | wc -l | tr -d ' '); d="$OP_STATE/$id"; mkdir "$d"
+    shift 2
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --title) printf %s "$2" > "$d/title"; shift ;;
+        --vault) printf %s "$2" > "$d/vault"; shift ;;
+        --tags) printf %s "$2" > "$d/tags"; shift ;;
+        notesPlain=*) printf %s "${1#notesPlain=}" > "$d/notes" ;;
+      esac; shift
+    done
+    printf %s "pw-$id-generated" > "$d/password"; item "$id" ;;
+  "item get") item "$3" ;;
+  "item edit") cp "${6#*\[file\]=}" "$OP_STATE/$3/file" ;;
+  *) echo "fake op: unsupported: $*" >&2; exit 2 ;;
+esac
+"#;
+
 const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/certs");
 
 struct Env {
-    tmp: tempfile::TempDir,
+    _tmp: tempfile::TempDir,
     work: PathBuf,
     gh: FakeGh,
+    op_state: PathBuf,
     keychain: PathBuf,
 }
 
 impl Env {
-    fn new() -> Self {
+    /// A repo and a keychain with the identities from these fixture .p12s.
+    fn new(identities: &[&str]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let gh = FakeGh::install(tmp.path(), FAKE_GH);
+        let op = tmp.path().join("bin/op");
+        fs::write(&op, FAKE_OP).unwrap();
+        assert!(Command::new("chmod").arg("+x").arg(&op).status().unwrap().success());
+        let op_state = tmp.path().join("op");
+        fs::create_dir_all(&op_state).unwrap();
         let work = tmp.path().join("work");
         fs::create_dir_all(work.join("sub")).unwrap();
         assert!(Command::new("git").arg("init").arg("-q").arg(&work).status().unwrap().success());
@@ -51,14 +94,11 @@ impl Env {
         let kc = keychain.to_str().unwrap();
         security(&["create-keychain", "-p", "kc", kc]);
         security(&["unlock-keychain", "-p", "kc", kc]);
-        Env { tmp, work, gh, keychain }
-    }
-
-    /// A copy of a fixture .p12 (apply deletes its inputs).
-    fn p12(&self, name: &str) -> PathBuf {
-        let p = self.tmp.path().join(format!("{name}.p12"));
-        fs::copy(format!("{FIX}/{name}.p12"), &p).unwrap();
-        p
+        for name in identities {
+            // -A: any app may use the key, so exporting it shows no dialog.
+            security(&["import", &format!("{FIX}/{name}.p12"), "-k", kc, "-P", "test", "-A"]);
+        }
+        Env { _tmp: tmp, work, gh, op_state, keychain }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -68,7 +108,7 @@ impl Env {
                 .current_dir(self.work.join("sub"))
                 .args(["--keychain", self.keychain.to_str().unwrap()])
                 .args(args)
-                .env_remove("RENEW_CERTS_P12_PASSWORD"),
+                .env("OP_STATE", &self.op_state),
         )
     }
 
@@ -80,16 +120,26 @@ impl Env {
         fs::write(self.gh.state.join(format!("{name}.var")), value).unwrap();
     }
 
-    fn log(&self) -> String {
-        self.gh.log()
-    }
-
-    fn identities(&self) -> String {
+    fn identities(&self) -> usize {
         let out = Command::new("security")
             .args(["find-certificate", "-a", "-Z", self.keychain.to_str().unwrap()])
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        String::from_utf8_lossy(&out.stdout).matches("SHA-1 hash").count()
+    }
+
+    /// (title, password, attached file) of each fake 1Password item.
+    fn op_items(&self) -> Vec<(String, String, Option<Vec<u8>>)> {
+        let mut items: Vec<_> = fs::read_dir(&self.op_state)
+            .unwrap()
+            .filter_map(|e| {
+                let d = e.unwrap().path();
+                let title = fs::read_to_string(d.join("title")).ok()?;
+                Some((title, fs::read_to_string(d.join("password")).unwrap(), fs::read(d.join("file")).ok()))
+            })
+            .collect();
+        items.sort();
+        items
     }
 }
 
@@ -108,25 +158,44 @@ fn stdout(o: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
 }
 
+/// The certificate subject in a .p12, opened with `password`.
+fn p12_subject(p12: &[u8], password: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("x.p12");
+    fs::write(&f, p12).unwrap();
+    let out = Command::new("/usr/bin/openssl")
+        .args(["pkcs12", "-in", f.to_str().unwrap(), "-passin", "env:PW", "-nokeys", "-clcerts"])
+        .env("PW", password)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+const BOTH: &[&str] = &["application-g2", "installer-g2"];
+
 #[test]
-fn apply_sets_secrets_and_variables() {
-    let env = Env::new();
-    let (app, inst) = (env.p12("application-g2"), env.p12("installer-g2"));
-    let out = env.run(&[
-        "apply", "--yes", "--password", "test",
-        "--application", app.to_str().unwrap(), "--installer", inst.to_str().unwrap(),
-    ]);
+fn apply_sets_both_secrets_under_a_random_password() {
+    let env = Env::new(BOTH);
+    let out = env.run(&["apply", "--yes"]);
     assert!(out.status.success());
-    let b64 = env.state("APPLE_CERT_APPLICATION_P12_BASE64", "secret").unwrap();
-    let p12 = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
-    assert_eq!(p12, fs::read(format!("{FIX}/application-g2.p12")).unwrap());
-    assert!(env.state("APPLE_CERT_INSTALLER_P12_BASE64", "secret").is_some());
-    assert_eq!(env.state("APPLE_CERT_P12_PASSWORD", "secret").unwrap(), b"test");
+    let pw = String::from_utf8(env.state("APPLE_CERT_P12_PASSWORD", "secret").unwrap()).unwrap();
+    assert_eq!(pw.len(), 40);
+    for (secret, cn) in [
+        ("APPLE_CERT_APPLICATION_P12_BASE64", "Developer ID Application"),
+        ("APPLE_CERT_INSTALLER_P12_BASE64", "Developer ID Installer"),
+    ] {
+        let p12 = base64::engine::general_purpose::STANDARD.decode(env.state(secret, "secret").unwrap()).unwrap();
+        assert!(p12_subject(&p12, &pw).contains(cn), "{secret}");
+    }
     assert_eq!(env.state("APPLE_CERT_APPLICATION_SHA1", "var").unwrap().len(), 40);
     assert!(env.state("APPLE_CERT_INSTALLER_EXPIRES", "var").unwrap().starts_with(b"2046-"));
-    assert!(!env.log().contains("test"), "password on a gh command line:\n{}", env.log());
-    assert!(!app.exists() && !inst.exists(), "inputs not deleted");
-    assert_eq!(env.identities().matches("SHA-1 hash").count(), 2, "not imported");
+    assert!(!env.gh.log().contains(&pw), "password on a gh command line");
+    assert!(stdout(&out).contains("renew-certs backup"));
+
+    // A second run gets a new password.
+    assert!(env.run(&["apply", "--yes"]).status.success());
+    assert_ne!(env.state("APPLE_CERT_P12_PASSWORD", "secret").unwrap(), pw.as_bytes());
 
     let out = env.run(&["status"]);
     assert_eq!(out.status.code(), Some(0), "status after apply");
@@ -135,82 +204,93 @@ fn apply_sets_secrets_and_variables() {
 
 #[test]
 fn dry_run_changes_nothing() {
-    let env = Env::new();
-    let app = env.p12("application-g2");
-    let out = env.run(&["--dry-run", "apply", "--password", "test", "--application", app.to_str().unwrap()]);
+    let env = Env::new(BOTH);
+    let out = env.run(&["--dry-run", "apply"]);
     assert!(out.status.success());
     assert!(stdout(&out).contains("[dry-run] gh secret set APPLE_CERT_APPLICATION_P12_BASE64 "));
     assert!(env.state("APPLE_CERT_APPLICATION_P12_BASE64", "secret").is_none());
-    assert!(!env.log().contains("variable set"));
-    assert!(app.exists());
+    assert!(!env.gh.log().contains("variable set"));
 }
 
 #[test]
-fn one_certificate_leaves_the_password_alone() {
-    let env = Env::new();
-    let inst = env.p12("installer-g2");
-    let out = env.run(&["apply", "-y", "--password", "test", "--installer", inst.to_str().unwrap()]);
-    assert!(out.status.success());
-    assert!(env.state("APPLE_CERT_INSTALLER_P12_BASE64", "secret").is_some());
-    assert!(env.state("APPLE_CERT_P12_PASSWORD", "secret").is_none());
-    assert!(stdout(&out).contains("must use the password CI already has"));
-}
-
-#[test]
-fn rejects_old_ca_and_wrong_password() {
-    let env = Env::new();
-    let old = env.p12("installer-oldca");
-    let out = env.run(&["apply", "-y", "--password", "test", "--installer", old.to_str().unwrap()]);
+fn needs_both_g2_identities() {
+    let env = Env::new(&["application-g2", "installer-oldca"]);
+    let out = env.run(&["apply", "-y"]);
     assert!(!out.status.success());
-    assert!(stdout(&out).contains("original Developer ID CA"));
-
-    let app = env.p12("application-g2");
-    let out = env.run(&["apply", "-y", "--password", "wrong", "--application", app.to_str().unwrap()]);
-    assert!(!out.status.success());
-    assert!(stdout(&out).contains("wrong password"));
-    assert!(env.state("APPLE_CERT_INSTALLER_P12_BASE64", "secret").is_none());
-    assert!(old.exists() && app.exists());
+    assert!(stdout(&out).contains("no G2 Developer ID Installer identity"));
+    assert!(env.state("APPLE_CERT_APPLICATION_P12_BASE64", "secret").is_none());
 }
 
 #[test]
 fn refuses_a_downgrade_unless_forced() {
-    let env = Env::new();
+    let env = Env::new(BOTH);
     env.set_var("APPLE_CERT_APPLICATION_SHA1", "AB");
     env.set_var("APPLE_CERT_APPLICATION_EXPIRES", "2099-01-01T00:00:00Z");
-    let app = env.p12("application-g2");
-    let args = ["apply", "-y", "--password", "test", "--application", app.to_str().unwrap()];
-    let out = env.run(&args);
+    let out = env.run(&["apply", "-y"]);
     assert!(!out.status.success());
     assert!(stdout(&out).contains("--force to downgrade"));
-    let out = env.run(&[&args[..], &["--force"]].concat());
-    assert!(out.status.success());
+    assert!(env.run(&["apply", "-y", "--force"]).status.success());
 }
 
 #[test]
-fn status_flags_unrecorded_ci() {
-    let env = Env::new();
+fn status_flags_unrecorded_ci_and_missing_backups() {
+    let env = Env::new(BOTH);
     let out = env.run(&["status"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout(&out).contains("unknown (not recorded by renew-certs)"));
+    assert_eq!(stdout(&out).matches("NO BACKUP").count(), 2);
 }
 
 #[test]
 fn cleanup_deletes_the_superseded_old_ca_identity() {
-    let env = Env::new();
-    let kc = env.keychain.to_str().unwrap();
-    security(&["import", &format!("{FIX}/installer-oldca.p12"), "-k", kc, "-P", "test"]);
-    assert_eq!(env.identities().matches("SHA-1 hash").count(), 1);
-    let inst = env.p12("installer-g2");
-    let out = env.run(&["apply", "-y", "--password", "test", "--installer", inst.to_str().unwrap()]);
+    let env = Env::new(&["application-g2", "installer-g2", "installer-oldca"]);
+    assert_eq!(env.identities(), 3);
+    let out = env.run(&["apply", "-y"]);
     assert!(out.status.success());
-    let ids = env.identities();
-    assert_eq!(ids.matches("SHA-1 hash").count(), 1, "{ids}");
-    assert!(!ids.contains("oldca") && stdout(&out).contains("Old identities"));
+    assert!(stdout(&out).contains("Old identities"));
+    assert_eq!(env.identities(), 2);
+}
+
+#[test]
+fn backup_stores_each_identity_once() {
+    let env = Env::new(BOTH);
+    let out = env.run(&["backup", "-y"]);
+    assert!(out.status.success());
+    let items = env.op_items();
+    assert_eq!(items.len(), 2);
+    for (title, pw, file) in &items {
+        assert!(title.starts_with("developer-id-application-2046-") || title.starts_with("developer-id-installer-2046-"));
+        let p12 = file.as_ref().expect("attachment");
+        assert!(p12_subject(p12, pw).contains("TESTTEAM01"), "{title}");
+    }
+    let log = fs::read_to_string(env.op_state.join("log")).unwrap();
+    assert!(log.contains("--vault Private --title developer-id-"));
+    assert!(log.contains("--tags renew-certs"));
+    assert!(!items.iter().any(|(_, pw, _)| log.contains(pw.as_str())), "password on an op command line");
+
+    // Again: nothing new.
+    let out = env.run(&["backup", "-y"]);
+    assert_eq!(stdout(&out).matches("already backed up").count(), 2);
+    assert_eq!(env.op_items().len(), 2);
+    let status = stdout(&env.run(&["status"]));
+    assert_eq!(status.matches("  backed up").count(), 2, "{status}");
+}
+
+#[test]
+fn backup_completes_an_item_without_attachment() {
+    let env = Env::new(BOTH);
+    assert!(env.run(&["backup", "-y"]).status.success());
+    let first = fs::read_dir(&env.op_state).unwrap().map(|e| e.unwrap().path()).find(|d| d.join("file").exists());
+    fs::remove_file(first.unwrap().join("file")).unwrap();
+    let out = env.run(&["backup", "-y"]);
+    assert_eq!(stdout(&out).matches("already backed up").count(), 1);
+    assert_eq!(env.op_items().len(), 2);
+    assert!(env.op_items().iter().all(|(_, _, f)| f.is_some()));
 }
 
 #[test]
 fn needs_a_certs_section() {
-    let env = Env::new();
+    let env = Env::new(&[]);
     fs::write(env.work.join("release.yaml"), "name: Demo\nversion: { preset: cargo }\n").unwrap();
     let out = env.run(&["status"]);
     assert!(!out.status.success());

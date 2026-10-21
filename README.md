@@ -25,7 +25,9 @@ macOS only:
 `~/Applications` must be on `PATH`. Prerequisites depend on the project:
 `git` and [`gh`](https://cli.github.com) (`gh auth login`) always; Xcode,
 `create-dmg` (`brew install create-dmg`), a Developer ID Application identity
-and notarytool credentials for local macOS builds; `zip` for `extra_assets`.
+and notarytool credentials for local macOS builds; `zip` for `extra_assets`;
+the 1Password CLI `op` (`brew install 1password-cli`, with *Integrate with
+1Password CLI* enabled in the app) for `renew-certs backup`.
 
 ## The release cycle
 
@@ -256,27 +258,34 @@ certs:
 - `renew-certs guide` explains the portal steps and offers to open Keychain
   Access and the portal.
 - `renew-certs status` lists the Developer ID identities in the keychain
-  (SHA-1, G2 or old CA, expiry) and what the repo's CI has. It exits with 1
-  when a CI certificate expires within `min_days` or isn't recorded yet.
-- `renew-certs apply [--password PW]` picks the latest G2 identity of each
-  type from the keychain and exports it (macOS asks once per key to allow the
-  export). It then checks the type, team, G2 issuer, remaining validity and
-  that it doesn't expire earlier than what CI has (`--force` overrides).
-  After a confirmation it sets the repo's secrets, records
-  `…_SHA1`/`…_EXPIRES` repo variables for `status`, and offers to delete the
-  superseded identities from the keychain. Run it once in every project with
-  a `certs:` section; the certificates stay in the keychain until you delete
-  them, so the same pair serves every project.
+  (SHA-1, G2 or old CA, expiry, whether 1Password has a backup) and what the
+  repo's CI has. It exits with 1 when a CI certificate expires within
+  `min_days` or isn't recorded yet.
+- `renew-certs apply` picks the latest G2 identity of each type from the
+  keychain and exports both under a new random password (macOS asks once
+  per key to allow the export). It then checks the type, team, G2 issuer,
+  remaining validity and that each doesn't expire earlier than what CI has
+  (`--force` overrides). After a confirmation it sets the two `.p12` secrets
+  and the password secret, records `…_SHA1`/`…_EXPIRES` repo variables for
+  `status`, and offers to delete the superseded identities from the
+  keychain. Run it once in every project with a `certs:` section; the
+  certificates stay in the keychain, so the same pair serves every project.
+- `renew-certs backup` stores each current identity in 1Password: one
+  *Password* item per certificate in the **Private** vault, tagged
+  `renew-certs` and titled like `developer-id-application-2027-11-20-47c2819d`
+  (type, expiry, SHA-1). 1Password generates the item's password; the `.p12`
+  encrypted with it is attached. Items that already have their `.p12` are
+  skipped, so it can simply be re-run. `apply` reminds you to run it.
 
-The password comes from `--password`, `$RENEW_CERTS_P12_PASSWORD`, or a
-prompt. It goes to openssl and `gh` through the environment and stdin, never
-on a command line. `--only application|installer` renews one type. If only
-one type is renewed, the password secret is left alone, so that `.p12` must
-use the password CI already has. `--application FILE` / `--installer FILE`
-take exported `.p12`s instead of the keychain (e.g. from another Mac). Those
-are imported into the keychain if missing and deleted afterwards.
-`--keychain FILE` works on another keychain, and `--dry-run` stops after the
-checks.
+The password for CI exists only in memory and in the repo secret: nothing
+needs it later, because a lost or broken secret is replaced by running
+`apply` again, which exports afresh. Passwords reach openssl, `gh` and `op`
+through the environment, stdin or `op`'s own generator, never a command
+line. What can't be recreated is the private key in the keychain; that's
+what `backup` is for. To restore on another Mac, download the `.p12` from
+the 1Password item, double-click it, enter the item's password, then run
+`apply`. `--keychain FILE` works on another keychain, and `--dry-run` stops
+after the checks.
 
 ## Examples
 

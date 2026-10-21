@@ -1,6 +1,6 @@
 //! Developer ID identities in the keychain, via Security.framework: listing,
 //! exporting one identity as PKCS#12 (passphrase in memory, not argv),
-//! importing, deleting.
+//! deleting; plus the random passwords the exports are encrypted with.
 
 use crate::cert::CertInfo;
 use anyhow::{Context, Result, bail};
@@ -9,7 +9,7 @@ use core_foundation::data::CFData;
 use core_foundation::string::CFString;
 use security_framework::identity::SecIdentity;
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, Reference, SearchResult};
-use security_framework::os::macos::import_export::ImportOptions;
+use security_framework::random::SecRandom;
 use security_framework::os::macos::keychain::SecKeychain;
 use security_framework_sys::import_export::{
     SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION, SecItemExport, SecItemImportExportKeyParameters, kSecFormatPKCS12,
@@ -22,8 +22,7 @@ pub struct Identity {
     handle: SecIdentity,
 }
 
-/// The keychain to work on: `--keychain`, else the default search list
-/// (listing) / the default keychain (import).
+/// The keychain to work on: `--keychain`, else the default search list.
 pub struct Keychain {
     pub path: Option<PathBuf>,
 }
@@ -59,21 +58,6 @@ impl Keychain {
         out.sort_by_key(|i| i.info.not_after);
         out.dedup_by(|a, b| a.info.sha1 == b.info.sha1);
         Ok(out)
-    }
-
-    /// Import a `.p12` (certificate + key).
-    pub fn import(&self, p12: &[u8], password: &str) -> Result<()> {
-        let kc = match self.open()? {
-            Some(kc) => kc,
-            None => SecKeychain::default()?,
-        };
-        ImportOptions::new()
-            .filename("identity.p12")
-            .pkcs12()
-            .passphrase(password)
-            .keychain(&kc)
-            .import(p12)
-            .context("keychain import failed")
     }
 
     /// Delete an identity (certificate and private key) by SHA-1.
@@ -120,3 +104,30 @@ impl Identity {
     }
 }
 
+
+/// A random 40-character alphanumeric password. It encrypts the `.p12` that
+/// goes to CI and lives only in memory: a lost one is replaced by running
+/// `apply` again, which exports afresh from the keychain.
+pub fn random_password() -> Result<String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut out = String::with_capacity(40);
+    let mut buf = [0u8; 64];
+    while out.len() < 40 {
+        SecRandom::default().copy_bytes(&mut buf).context("no random bytes")?;
+        // 248 = 4 × 62: rejecting larger bytes keeps the choice uniform.
+        out.extend(buf.iter().filter(|b| **b < 248).map(|b| ALPHABET[usize::from(*b) % 62] as char));
+    }
+    out.truncate(40);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn random_passwords() {
+        let (a, b) = (super::random_password().unwrap(), super::random_password().unwrap());
+        assert_eq!(a.len(), 40);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(a, b);
+    }
+}
