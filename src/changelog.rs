@@ -52,6 +52,17 @@ pub fn stamp_date(text: &str, version: &str, wip_marker: &str, date: &str) -> Op
     replace_first(text, |l| re.is_match(l), |_| vec![format!("## [{version}] - {date}")])
 }
 
+/// Undo `stamp_date`: replace a dated "## [X] - <date>" header with
+/// "## [X] - <wip>". `None` if there is no such header or it is still open.
+pub fn reopen(text: &str, version: &str, wip_marker: &str) -> Option<String> {
+    let (header, open) = (header_re(version), open_header_re(version, wip_marker));
+    replace_first(
+        text,
+        |l| header.is_match(l) && !open.is_match(l),
+        |_| vec![format!("## [{version}] - {wip_marker}")],
+    )
+}
+
 /// Insert an empty "## [next] - <wip>" section, plus compare links if
 /// configured. Errors if the insertion point isn't there.
 pub fn insert_next(text: &str, cfg: &ChangelogCfg, current: &str, next: &str) -> Result<String> {
@@ -223,6 +234,9 @@ mod tests {
         assert!(s.contains("## [1.8.0] - 2026-10-18\n"));
         assert!(!is_open(&s, "1.8.0", "work in progress"));
         assert!(stamp_date(&s, "1.8.0", "work in progress", "2026-10-19").is_none());
+        assert_eq!(reopen(&s, "1.8.0", "work in progress").unwrap(), SIMPLE);
+        assert!(reopen(SIMPLE, "1.8.0", "work in progress").is_none());
+        assert!(reopen(SIMPLE, "1.6.0", "work in progress").is_none());
     }
 
     #[test]

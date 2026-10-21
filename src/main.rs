@@ -8,11 +8,12 @@ use std::path::PathBuf;
 /// Release cycle:
 ///   release              pre-release "vX.Y.Z-pre" (repeatable; CHANGELOG stays open)
 ///   release --rc         release candidate: date the CHANGELOG entry, then as above
+///   release --reopen     undo --rc's date: the CHANGELOG entry is open again
 ///   release --release    promote the pre-release to "vX.Y.Z" in place (squash-merge to main)
 ///   release --next       start the next cycle: cut dev-X.Y.Z from main, bump version
 #[derive(Parser)]
 #[command(name = "release", disable_version_flag = true, verbatim_doc_comment)]
-#[command(group(ArgGroup::new("mode").args(["rc", "release", "next", "build_only"])))]
+#[command(group(ArgGroup::new("mode").args(["rc", "reopen", "release", "next", "build_only"])))]
 struct Cli {
     /// Run as if started in this directory.
     #[arg(short = 'C', global = true, value_name = "DIR")]
@@ -27,6 +28,9 @@ struct Cli {
     /// Release candidate: stamp today's date on the CHANGELOG entry, then pre-release.
     #[arg(long)]
     rc: bool,
+    /// Undo --rc: put the CHANGELOG entry's date back to the work-in-progress marker.
+    #[arg(long)]
+    reopen: bool,
     /// Promote the pre-release to the real release.
     #[arg(long)]
     release: bool,
@@ -72,12 +76,14 @@ fn real_main() -> Result<()> {
     let ctx = ctx::Ctx::new(cfg, root, version, ui::Ui { dry_run: cli.dry_run, yes: cli.yes });
 
     if let Some(Cmd::Ios { build_only, release }) = cli.cmd {
-        let mode_flags = cli.rc || cli.release || cli.next || cli.build_only;
+        let mode_flags = cli.rc || cli.reopen || cli.release || cli.next || cli.build_only;
         anyhow::ensure!(!mode_flags, "put ios options after the subcommand: release ios --release");
         return appstore::ios::run(&ctx, build_only, release);
     }
     if cli.next {
         modes::next::run(&ctx, cli.version.as_deref())
+    } else if cli.reopen {
+        modes::reopen::run(&ctx)
     } else if cli.release {
         modes::promote::run(&ctx)
     } else if cli.build_only {

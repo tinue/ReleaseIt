@@ -1,6 +1,7 @@
 pub mod next;
 pub mod pre;
 pub mod promote;
+pub mod reopen;
 
 use crate::build::{self, Phase};
 use crate::ctx::Ctx;

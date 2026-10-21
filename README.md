@@ -34,6 +34,7 @@ the 1Password CLI `op` (`brew install 1password-cli`, with *Integrate with
 ```
 release                 pre-release: build, publish/update GitHub pre-release vX.Y.Z-pre
 release --rc            release candidate: date the CHANGELOG entry, then as above
+release --reopen        undo --rc: the CHANGELOG entry is open again
 release --release       promote vX.Y.Z-pre to vX.Y.Z in place
 release --next          start the next cycle: cut dev-X.Y.Z from main, bump the version
 release --build-only    checks + local build steps only (no git, GitHub or notarization)
@@ -55,6 +56,10 @@ started there.
 2. **`release --rc`**: the same, but first replaces the open header
    (`## [X.Y.Z] - <wip_marker>` or a bare `## [X.Y.Z]`) with today's date,
    commits and pushes. A date already there is never overwritten.
+   **`release --reopen`** undoes that (an accidental or premature `--rc`):
+   the dated header goes back to `- <wip_marker>`, committed and pushed. The
+   `-pre` tag and pre-release stay; the next `release` re-cuts them. Refused
+   once `vX.Y.Z` exists.
 3. **`release --release`**, once the release candidate is good. Requires the
    CHANGELOG entry to be dated and the pre-release to exist (with assets, if
    the project has build steps).

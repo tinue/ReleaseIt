@@ -150,6 +150,16 @@ fn full_cycle() {
     assert!(!cl.contains("WIP") && cl.contains("## [0.1.0] - 20"), "{cl}");
     assert_eq!(git(&env.work, &["rev-parse", "HEAD"]), git(&env.remote, &["rev-parse", "dev-0.1.0"]));
 
+    // --reopen undoes the date (commit + push), leaving the pre-release alone;
+    // --release refuses again until the next --rc.
+    ok(&env, &["--yes", "--reopen"]);
+    assert!(fs::read_to_string(env.work.join("CHANGELOG.md")).unwrap().contains("## [0.1.0] - WIP\n"));
+    assert_eq!(git(&env.remote, &["log", "-1", "--format=%s", "dev-0.1.0"]), "Reopen 0.1.0 CHANGELOG entry");
+    assert_eq!(git(&env.remote, &["tag"]), "v0.1.0-pre");
+    assert!(ok(&env, &["--yes", "--reopen"]).contains("already open"));
+    assert!(!release(&env, &["--yes", "--release"]).status.success());
+    ok(&env, &["--yes", "--rc"]);
+
     // Unstaged changes get stashed and restored.
     fs::write(env.work.join("README.md"), "dirty\n").unwrap();
 
@@ -173,6 +183,11 @@ fn full_cycle() {
     let cl = fs::read_to_string(env.work.join("CHANGELOG.md")).unwrap();
     assert!(cl.starts_with("# Changelog\n\n## [0.1.1] - WIP\n\n## [0.1.0] - 20"), "{cl}");
     assert_eq!(git(&env.remote, &["log", "-1", "--format=%s", "dev-0.1.1"]), "Bump version to 0.1.1");
+
+    // The released version can't be reopened.
+    git(&env.work, &["checkout", "-q", "dev-0.1.0"]);
+    assert!(!release(&env, &["--yes", "--reopen"]).status.success());
+    git(&env.work, &["checkout", "-q", "dev-0.1.1"]);
 
     // A second --next for the same version is refused.
     assert!(!release(&env, &["--yes", "--next", "--version", "0.1.1"]).status.success());
