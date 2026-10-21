@@ -1,11 +1,11 @@
 //! `kind: xcode-dmg` — the macOS app, built locally: Xcode archive →
 //! Developer ID export → DMG → sign → (pre-release only) notarize + staple.
 
-use super::xcode::{self, notarize, signing_identity, xcodebuild};
+use super::xcode::{self, notarize, signing_identity};
 use crate::config::XcodeDmg;
 use crate::ctx::Ctx;
 use crate::sh;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -29,49 +29,36 @@ pub fn build(ctx: &Ctx, x: &XcodeDmg, notarize_it: bool) -> Result<Vec<PathBuf>>
     println!("Using signing identity: {identity}");
 
     println!("Archiving {app} {}…", ctx.version);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    std::fs::create_dir_all(&dir)?;
-    let archive = dir.join(format!("{app}.xcarchive"));
     // arch=arm64 in the destination pins the build to Apple Silicon and avoids
     // the "multiple matching destinations" warning when Rosetta is present;
     // ARCHS=arm64 makes the archive itself contain only the arm64 slice.
-    xcodebuild(
-        &[
-            "archive", "-project", s(&x.project)?, "-scheme", &x.scheme, "-configuration", "Release",
-            "-destination", "platform=macOS,arch=arm64", "-archivePath", s(&archive)?, "ARCHS=arm64",
-        ],
-        &["Build", "Archive"],
-    )?;
-
-    // -exportArchive re-signs with the Developer ID certificate AND embeds the
+    //
+    // The export re-signs with the Developer ID certificate AND embeds the
     // matching Developer ID provisioning profile, which entitlements such as
     // iCloud need at runtime. A plain `codesign --force` re-signs the binary
     // but keeps the archive's development profile, and AMFI then rejects the
-    // entitlements. -allowProvisioningUpdates lets Xcode fetch that profile.
-    let export = dir.join("export");
-    println!("Exporting with Developer ID…");
-    xcodebuild(
-        &[
-            "-exportArchive", "-archivePath", s(&archive)?, "-exportPath", s(&export)?,
-            "-exportOptionsPlist", s(&x.export_options)?, "-allowProvisioningUpdates",
-        ],
-        &["Export"],
+    // entitlements.
+    let export = xcode::archive_and_export(
+        &x.project,
+        &x.scheme,
+        app,
+        "platform=macOS,arch=arm64",
+        &["ARCHS=arm64"],
+        &x.export_options,
+        &dir,
     )?;
     let exported = export.join(format!("{app}.app"));
     if !exported.is_dir() {
-        let _ = sh::run("find", &[s(&export)?, "-maxdepth", "3"]);
-        bail!("exported .app not found at {}", exported.display());
+        return Err(xcode::not_exported(&export, &format!("{app}.app")));
     }
     let app_path = dir.join(format!("{app}.app"));
-    sh::run("cp", &["-R", s(&exported)?, s(&app_path)?])?;
-    sh::run("codesign", &["--verify", "--deep", "--strict", s(&app_path)?])?;
+    sh::run("cp", &["-R", sh::path_str(&exported)?, sh::path_str(&app_path)?])?;
+    sh::run("codesign", &["--verify", "--deep", "--strict", sh::path_str(&app_path)?])?;
     println!("Exported and signed: {}", app_path.display());
 
     println!("Creating DMG…");
     create_dmg(ctx, app, &app_path, &dmg)?;
-    sh::run("codesign", &["--force", "--sign", &identity, s(&dmg)?])?;
+    sh::run("codesign", &["--force", "--sign", &identity, sh::path_str(&dmg)?])?;
     println!("DMG: {}", dmg.display());
 
     if notarize_it {
@@ -85,10 +72,10 @@ fn create_dmg(ctx: &Ctx, app: &str, app_path: &Path, dmg: &Path) -> Result<()> {
     let volicon = app_path.join("Contents/Resources/AppIcon.icns");
     let icon = format!("{app}.app");
     let args = [
-        "--volname", &volname, "--volicon", s(&volicon)?,
+        "--volname", &volname, "--volicon", sh::path_str(&volicon)?,
         "--window-pos", "200", "120", "--window-size", "660", "400", "--icon-size", "128",
         "--icon", &icon, "165", "185", "--app-drop-link", "495", "185", "--no-internet-enable",
-        s(dmg)?, s(app_path)?,
+        sh::path_str(dmg)?, sh::path_str(app_path)?,
     ];
     let finder_blocked = regex::Regex::new(r"\(-1743\)|Apple[ -]Events.*Finder|Finder.*Apple[ -]Events").unwrap();
     loop {
@@ -117,8 +104,4 @@ fn create_dmg(ctx: &Ctx, app: &str, app_path: &Path, dmg: &Path) -> Result<()> {
         let _ = std::fs::remove_file(dmg);
         println!("Retrying DMG creation…");
     }
-}
-
-fn s(p: &Path) -> Result<&str> {
-    p.to_str().context("non-UTF-8 path")
 }

@@ -81,3 +81,10 @@ pub fn section(title: &str) {
 pub fn end_section() {
     println!("{}\n", "─".repeat(64));
 }
+
+/// `body` between a section header and its closing rule.
+pub fn boxed(title: &str, body: &str) {
+    section(title);
+    println!("{}", body.trim_end());
+    end_section();
+}

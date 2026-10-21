@@ -2,7 +2,7 @@
 
 use crate::ctx::Ctx;
 use crate::sh;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
@@ -32,7 +32,7 @@ pub fn view(tag: &str) -> Option<Release> {
 /// Create or update the pre-release for `ctx.pre_tag` with `assets`.
 pub fn publish_pre(ctx: &Ctx, assets: &[&str]) -> Result<()> {
     let notes = ctx.notes_file()?;
-    let notes_path = notes.path().to_str().context("temp path")?;
+    let notes_path = sh::path_str(notes.path())?;
     let title = format!("{} (pre-release)", ctx.cfg.title(&ctx.version));
     if view(&ctx.pre_tag).is_some() {
         println!("Pre-release {} exists — updating…", ctx.pre_tag);
@@ -75,7 +75,7 @@ pub fn find_run(workflow: &str, event: &str, sha: &str, since: &str) -> Result<u
             "gh",
             &[
                 "run", "list", &format!("--workflow={workflow}"), &format!("--event={event}"),
-                "--json", "databaseId,headSha,createdAt",
+                &format!("--commit={sha}"), "--json", "databaseId,headSha,createdAt",
             ],
         ) {
             let runs: Vec<Run> = serde_json::from_str(&json).unwrap_or_default();
@@ -91,7 +91,7 @@ pub fn find_run(workflow: &str, event: &str, sha: &str, since: &str) -> Result<u
     }
     bail!(
         "no {workflow} run for commit {} appeared within 60s.\n  Check manually:  gh run list --workflow={workflow}",
-        &sha[..7.min(sha.len())]
+        crate::git::short(sha)
     );
 }
 
@@ -109,5 +109,5 @@ pub fn watch(run_id: u64, what: &str) -> Result<()> {
 }
 
 pub fn download(run_id: u64, dir: &Path) -> Result<()> {
-    sh::run("gh", &["run", "download", &run_id.to_string(), "-D", dir.to_str().context("path")?])
+    sh::run("gh", &["run", "download", &run_id.to_string(), "-D", sh::path_str(dir)?])
 }

@@ -9,47 +9,35 @@
 //! file (.AppImage, signed/notarized/stapled .dmg, installer .exe) — copied
 //! and renamed, never zipped (zipping a .dmg would strip its stapled ticket).
 
-use crate::config::{ArtifactMap, BuildStep};
+use crate::config::ArtifactMap;
 use crate::ctx::Ctx;
-use crate::gh;
-use anyhow::{Context, Result, bail};
+use crate::{gh, git, sh};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 pub struct Pending<'a> {
     workflow: &'a str,
     event: &'static str,
-    sha: String,
-    since: String,
     artifacts: Option<&'a [ArtifactMap]>,
 }
 
-pub fn start<'a>(ctx: &Ctx, step: &'a BuildStep, sha: &str, since: &str) -> Result<Pending<'a>> {
-    match step {
-        BuildStep::GithubTagPush { workflow } => Ok(Pending {
-            workflow,
-            event: "push",
-            sha: sha.into(),
-            since: since.into(),
-            artifacts: None,
-        }),
-        BuildStep::GithubDispatch { workflow, artifacts } => {
-            println!("Triggering {workflow} at {} (commit {})…", ctx.pre_tag, &sha[..7]);
-            ctx.run("gh", &["workflow", "run", workflow, "--ref", &ctx.pre_tag])?;
-            Ok(Pending {
-                workflow,
-                event: "workflow_dispatch",
-                sha: sha.into(),
-                since: since.into(),
-                artifacts: Some(artifacts),
-            })
-        }
-        _ => unreachable!("not a CI step"),
-    }
+/// `github-tag-push`: the tag push already started it.
+pub fn tag_push(workflow: &str) -> Pending<'_> {
+    Pending { workflow, event: "push", artifacts: None }
 }
 
-pub fn finish(ctx: &Ctx, p: Pending, work: &Path, assets_dir: &Path) -> Result<Vec<PathBuf>> {
+/// `github-dispatch`: start it against the -pre tag.
+pub fn dispatch<'a>(ctx: &Ctx, workflow: &'a str, artifacts: &'a [ArtifactMap], sha: &str) -> Result<Pending<'a>> {
+    println!("Triggering {workflow} at {} (commit {})…", ctx.pre_tag, git::short(sha));
+    ctx.run("gh", &["workflow", "run", workflow, "--ref", &ctx.pre_tag])?;
+    Ok(Pending { workflow, event: "workflow_dispatch", artifacts: Some(artifacts) })
+}
+
+/// Wait for the run of `p` for commit `sha`, started at or after `since`,
+/// and collect its artifacts.
+pub fn finish(ctx: &Ctx, p: Pending, sha: &str, since: &str, work: &Path, assets_dir: &Path) -> Result<Vec<PathBuf>> {
     println!("Waiting for the {} run to appear…", p.workflow);
-    let run_id = gh::find_run(p.workflow, p.event, &p.sha, &p.since)?;
+    let run_id = gh::find_run(p.workflow, p.event, sha, since)?;
     println!("Found run {run_id} — waiting for it to finish…");
     gh::watch(run_id, &ctx.pre_tag)?;
 
@@ -65,7 +53,7 @@ pub fn finish(ctx: &Ctx, p: Pending, work: &Path, assets_dir: &Path) -> Result<V
             bail!("expected artifact '{}' not found in run {run_id}", a.artifact);
         }
         let pattern = dir.join(&a.file);
-        let matches: Vec<PathBuf> = glob::glob(pattern.to_str().context("path")?)?
+        let matches: Vec<PathBuf> = glob::glob(sh::path_str(&pattern)?)?
             .collect::<Result<_, _>>()?;
         let [src] = matches.as_slice() else {
             bail!("artifact '{}': '{}' matched {} files, expected exactly 1", a.artifact, a.file, matches.len());

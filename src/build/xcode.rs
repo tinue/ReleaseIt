@@ -5,7 +5,7 @@ use crate::sh;
 use anyhow::{Context, Result, bail};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub fn require_xcode() -> Result<()> {
@@ -51,6 +51,49 @@ pub fn xcodebuild(args: &[&str], prefixes: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Wipe `dir`, archive `scheme` into `<dir>/<name>.xcarchive` for
+/// `destination` (plus `extra` xcodebuild arguments), then export it with
+/// `export_options`; return the export directory.
+pub fn archive_and_export(
+    project: &Path,
+    scheme: &str,
+    name: &str,
+    destination: &str,
+    extra: &[&str],
+    export_options: &Path,
+    dir: &Path,
+) -> Result<PathBuf> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    std::fs::create_dir_all(dir)?;
+    let archive = dir.join(format!("{name}.xcarchive"));
+    let mut args = vec![
+        "archive", "-project", sh::path_str(project)?, "-scheme", scheme, "-configuration", "Release",
+        "-destination", destination, "-archivePath", sh::path_str(&archive)?,
+    ];
+    args.extend_from_slice(extra);
+    xcodebuild(&args, &["Build", "Archive"])?;
+
+    // -allowProvisioningUpdates lets Xcode fetch the export's profile.
+    let export = dir.join("export");
+    println!("Exporting…");
+    xcodebuild(
+        &[
+            "-exportArchive", "-archivePath", sh::path_str(&archive)?, "-exportPath", sh::path_str(&export)?,
+            "-exportOptionsPlist", sh::path_str(export_options)?, "-allowProvisioningUpdates",
+        ],
+        &["Export"],
+    )?;
+    Ok(export)
+}
+
+/// The error for an export that lacks `what`, after listing what it holds.
+pub fn not_exported(export: &Path, what: &str) -> anyhow::Error {
+    let _ = sh::run("find", &[&export.to_string_lossy(), "-maxdepth", "3"]);
+    anyhow::anyhow!("{what} not found in {}", export.display())
+}
+
 /// The Developer ID Application identity: $SIGN_IDENTITY, or the first one
 /// in the keychain.
 pub fn signing_identity() -> Result<String> {
@@ -84,7 +127,7 @@ pub fn notarize(profile: &str, file: &Path) -> Result<()> {
              --password \"<app-specific-password>\"   # appleid.apple.com → App-Specific Passwords"
         );
     }
-    let path = file.to_str().context("path")?;
+    let path = sh::path_str(file)?;
     println!("Notarizing (this may take a minute)…");
     let (_, out) = sh::capture_all(
         "xcrun",

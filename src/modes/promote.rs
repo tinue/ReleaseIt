@@ -11,6 +11,7 @@ use crate::changelog;
 use crate::ctx::Ctx;
 use crate::gh;
 use crate::git::{self, StashGuard};
+use crate::sh;
 use anyhow::{Context, Result, bail};
 
 pub fn run(ctx: &Ctx) -> Result<()> {
@@ -61,9 +62,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     // unlike `git add -A` it never sweeps up untracked build output.
     let main = ctx.cfg.main_branch.as_str();
     println!("Squash-merging {branch} into {main}…");
-    ctx.run("git", &["fetch", "origin", main, "--quiet"])?;
-    ctx.run("git", &["checkout", main])?;
-    ctx.run("git", &["merge", "--ff-only", &format!("origin/{main}")])?;
+    git::checkout_main_ff(ctx)?;
     ctx.run("git", &["merge", "--squash", &branch])?;
     ctx.run("git", &["commit", "-m", &msg])?;
     ctx.run("git", &["push", "origin", main])?;
@@ -80,7 +79,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         "gh",
         &[
             "release", "edit", &ctx.pre_tag, "--tag", &ctx.tag, "--title", &title,
-            "--notes-file", notes_file.path().to_str().context("path")?,
+            "--notes-file", sh::path_str(notes_file.path())?,
             "--prerelease=false", "--latest",
         ],
     )?;

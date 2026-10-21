@@ -2,7 +2,7 @@
 //! version, newest first.
 
 use crate::config::{ChangelogCfg, InsertNext};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 
 fn header_re(version: &str) -> Regex {
@@ -49,42 +49,18 @@ pub fn is_open(text: &str, version: &str, wip_marker: &str) -> bool {
 /// already carries a date (never overwritten).
 pub fn stamp_date(text: &str, version: &str, wip_marker: &str, date: &str) -> Option<String> {
     let re = open_header_re(version, wip_marker);
-    let mut changed = false;
-    let out = map_lines(text, |l| {
-        if !changed && re.is_match(l) {
-            changed = true;
-            vec![format!("## [{version}] - {date}")]
-        } else {
-            vec![l.to_string()]
-        }
-    });
-    changed.then_some(out)
+    replace_first(text, |l| re.is_match(l), |_| vec![format!("## [{version}] - {date}")])
 }
 
 /// Insert an empty "## [next] - <wip>" section, plus compare links if
 /// configured. Errors if the insertion point isn't there.
 pub fn insert_next(text: &str, cfg: &ChangelogCfg, current: &str, next: &str) -> Result<String> {
     let header = format!("## [{next}] - {}", cfg.wip_marker);
-    let mut inserted = false;
-    let mut out = match cfg.insert_next {
-        InsertNext::Top => map_lines(text, |l| {
-            if !inserted {
-                inserted = true;
-                vec![l.to_string(), String::new(), header.clone()]
-            } else {
-                vec![l.to_string()]
-            }
-        }),
-        InsertNext::AfterUnreleased => map_lines(text, |l| {
-            if !inserted && l == "## [Unreleased]" {
-                inserted = true;
-                vec![l.to_string(), String::new(), header.clone()]
-            } else {
-                vec![l.to_string()]
-            }
-        }),
+    let after: fn(&str) -> bool = match cfg.insert_next {
+        InsertNext::Top => |_| true,
+        InsertNext::AfterUnreleased => |l| l == "## [Unreleased]",
     };
-    if !inserted {
+    let Some(mut out) = replace_first(text, after, |l| vec![l.to_string(), String::new(), header.clone()]) else {
         bail!(
             "could not insert '{header}' into {}: {}",
             cfg.file.display(),
@@ -93,24 +69,20 @@ pub fn insert_next(text: &str, cfg: &ChangelogCfg, current: &str, next: &str) ->
                 InsertNext::AfterUnreleased => "no '## [Unreleased]' line",
             }
         );
-    }
+    };
     if let Some(repo) = &cfg.compare_links {
         let repo = repo.trim_end_matches('/');
-        let mut found = false;
-        out = map_lines(&out, |l| {
-            if !found && l.starts_with("[Unreleased]: ") {
-                found = true;
+        out = replace_first(
+            &out,
+            |l| l.starts_with("[Unreleased]: "),
+            |_| {
                 vec![
                     format!("[Unreleased]: {repo}/compare/v{next}...HEAD"),
                     format!("[{next}]: {repo}/compare/v{current}...v{next}"),
                 ]
-            } else {
-                vec![l.to_string()]
-            }
-        });
-        if !found {
-            bail!("no '[Unreleased]: ' compare link in {}", cfg.file.display());
-        }
+            },
+        )
+        .with_context(|| format!("no '[Unreleased]: ' compare link in {}", cfg.file.display()))?;
     }
     Ok(out)
 }
@@ -168,17 +140,27 @@ pub fn for_audience(notes: &str, audience: Audience) -> Result<String> {
     Ok(s)
 }
 
-/// Line-wise rewrite that keeps the file's trailing-newline state.
-fn map_lines(text: &str, mut f: impl FnMut(&str) -> Vec<String>) -> String {
+/// Replace the first line matching `pred` with `f(line)`, keeping the
+/// trailing newline; `None` if no line matches.
+fn replace_first(text: &str, pred: impl Fn(&str) -> bool, f: impl Fn(&str) -> Vec<String>) -> Option<String> {
     let mut out: Vec<String> = Vec::new();
+    let mut done = false;
     for l in text.lines() {
-        out.extend(f(l));
+        if !done && pred(l) {
+            done = true;
+            out.extend(f(l));
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    if !done {
+        return None;
     }
     let mut s = out.join("\n");
     if text.ends_with('\n') {
         s.push('\n');
     }
-    s
+    Some(s)
 }
 
 #[cfg(test)]

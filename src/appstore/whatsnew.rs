@@ -5,9 +5,9 @@
 
 use crate::config::AppStoreCfg;
 use crate::ctx::Ctx;
-use crate::ui;
 use crate::sh;
-use anyhow::{Context, Result, bail};
+use crate::ui;
+use anyhow::{Result, bail};
 use regex::Regex;
 
 /// Markdown → App Store plain text:
@@ -99,9 +99,7 @@ pub fn check_forbidden(text: &str, words: &[String]) -> Result<()> {
 pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
     let text = convert(notes);
     if ctx.dry_run {
-        ui::section("Draft App Store release notes (whatsnew.txt)");
-        println!("{text}");
-        ui::end_section();
+        ui::boxed("Draft App Store release notes (whatsnew.txt)", &text);
         if let Err(e) = check_forbidden(&text, &app.notes_forbidden) {
             println!("Warning: {e:#}");
         }
@@ -111,9 +109,7 @@ pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
         bail!("every line of the CHANGELOG entry is marked <!-- appstore: skip --> — nothing left for the App Store.");
     }
     check_forbidden(&text, &app.notes_forbidden)?;
-    ui::section("App Store release notes (whatsnew.txt)");
-    println!("{text}");
-    ui::end_section();
+    ui::boxed("App Store release notes (whatsnew.txt)", &text);
     ctx.require_confirm("Use these release notes for App Store?")?;
 
     let wt = ctx.root.join(&app.worktree);
@@ -123,7 +119,7 @@ pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
         return Ok(());
     }
     std::fs::write(wt.join("whatsnew.txt"), format!("{text}\n"))?;
-    let wt_s = wt.to_str().context("path")?;
+    let wt_s = sh::path_str(&wt)?;
     sh::run("git", &["-C", wt_s, "add", "-f", "whatsnew.txt"])?;
     if sh::succeeds("git", &["-C", wt_s, "diff", "--cached", "--quiet"]) {
         println!("  (whatsnew.txt unchanged — no commit needed)");

@@ -10,8 +10,8 @@ use crate::build::{self, Phase};
 use crate::changelog;
 use crate::config::BuildStep;
 use crate::ctx::Ctx;
-use crate::ui;
 use crate::git::{self, StashGuard};
+use crate::ui;
 use crate::{appstore, gh, sh};
 use anyhow::{Context, Result, bail};
 
@@ -63,9 +63,10 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
         appstore::whatsnew::publish(ctx, app, &ctx.appstore_notes()?)?;
     }
 
-    ui::section(&format!("Release notes for {} (from {})", ctx.pre_tag, ctx.cfg.changelog.file.display()));
-    println!("{}", ctx.release_notes()?.trim_end());
-    ui::end_section();
+    ui::boxed(
+        &format!("Release notes for {} (from {})", ctx.pre_tag, ctx.cfg.changelog.file.display()),
+        &ctx.release_notes()?,
+    );
     println!("Build plan:");
     for line in build::describe(ctx) {
         println!("  • {line}");
@@ -77,9 +78,7 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
         git::short_head()?
     ))?;
 
-    let since = (chrono::Utc::now() - chrono::Duration::seconds(30))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let since = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     // -f: the -pre tag is disposable and moves to the latest pre-release commit.
     ctx.run("git", &["tag", "-f", &ctx.pre_tag])?;
     ctx.run("git", &["push", "-f", "origin", &ctx.pre_tag])?;
@@ -91,18 +90,14 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     let work = tempfile::tempdir()?;
     let assets = build::run(ctx, Phase::Pre, &since, work.path())?;
 
+    // With no assets of its own, a github-tag-push workflow published it.
     let ci_publishes = ctx.cfg.build.iter().any(|s| matches!(s, BuildStep::GithubTagPush { .. }));
-    if assets.is_empty() && ci_publishes {
-        // The github-tag-push workflow published the release itself.
-        let Some(r) = gh::view(&ctx.pre_tag) else {
-            bail!("the build finished but there is no GitHub release '{}'", ctx.pre_tag);
-        };
-        println!("Done.  Pre-release {}: {}  ({} assets)", ctx.pre_tag, r.url, r.assets.len());
-        return Ok(());
+    if !(assets.is_empty() && ci_publishes) {
+        let paths: Vec<&str> = assets.iter().map(|p| sh::path_str(p)).collect::<Result<_>>()?;
+        gh::publish_pre(ctx, &paths)?;
     }
-    let paths: Vec<&str> = assets.iter().map(|p| p.to_str().context("path")).collect::<Result<_>>()?;
-    gh::publish_pre(ctx, &paths)?;
-    let r = gh::view(&ctx.pre_tag).context("pre-release vanished after publishing")?;
+    let r = gh::view(&ctx.pre_tag)
+        .with_context(|| format!("the build finished but there is no GitHub release '{}'", ctx.pre_tag))?;
     println!("Done.  Pre-release {}: {}  ({} assets)", ctx.pre_tag, r.url, r.assets.len());
     Ok(())
 }
@@ -113,7 +108,7 @@ fn stamp_changelog_date(ctx: &Ctx) -> Result<()> {
     let Some(new) = changelog::stamp_date(&text, &ctx.version, &ctx.cfg.changelog.wip_marker, &today) else {
         return Ok(()); // already dated
     };
-    let file = ctx.cfg.changelog.file.to_str().context("path")?;
+    let file = sh::path_str(&ctx.cfg.changelog.file)?;
     println!("Setting {file} release date for {} to {today}…", ctx.version);
     ctx.write_file(&ctx.changelog_path(), &new, "release date")?;
     ctx.run("git", &["add", file])?;

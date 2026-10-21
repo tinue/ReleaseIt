@@ -18,11 +18,11 @@
 //! validation service is down).
 
 use super::asc::{Asc, Credentials};
-use crate::build::xcode::{self, xcodebuild};
+use crate::build::xcode;
 use crate::config::AppStoreCfg;
 use crate::ctx::Ctx;
-use crate::ui;
 use crate::git::{self, StashGuard};
+use crate::ui;
 use crate::{gh, sh};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -78,8 +78,44 @@ pub fn run(ctx: &Ctx, build_only: bool, release: bool) -> Result<()> {
     if !sh::succeeds("xcrun", &["altool", "--version"]) {
         bail!("xcrun altool not found. Ensure Xcode is installed and selected.");
     }
-    let mut creds = None;
-    if !build_only {
+    println!("Preparing {} {} for the App Store…", p.app_name, ctx.version);
+    let upload = if build_only { None } else { Some(Upload::prepare(ctx, app, &p)?) };
+
+    if ctx.dry_run {
+        let notes = upload.as_ref().map(|u| u.notes.as_str()).unwrap_or_default();
+        if p.whatsnew.is_file() && std::fs::metadata(&p.whatsnew)?.len() > 0 {
+            ui::boxed("App Store release notes (whatsnew.txt)", &std::fs::read_to_string(&p.whatsnew)?);
+        } else if !notes.is_empty() {
+            ui::boxed("CHANGELOG entry (whatsnew.txt not yet generated)", notes);
+            println!("  (`release` generates the plain-text App Store version)");
+        }
+        if release {
+            println!("[dry-run] would review metadata + screenshots, verify the uploaded build, then set up App Store version {}", ctx.version);
+        } else {
+            println!("[dry-run] would archive, export, {}upload the IPA", if build_only { "(build only — no) " } else { "validate and " });
+        }
+        println!("Done.  [dry-run] No changes made.");
+        return Ok(());
+    }
+
+    match upload {
+        // clap rules out --release with --build-only.
+        Some(u) if release => app_store_release(ctx, app, &p, u.creds),
+        u => testflight(ctx, app, &p, u.as_ref().map(|u| &u.creds)),
+    }
+}
+
+/// What an upload (TestFlight or App Store) needs beyond a local build.
+struct Upload {
+    creds: Credentials,
+    /// The CHANGELOG section for the App Store.
+    notes: String,
+    /// Restores stashed changes when the run ends.
+    _stash: StashGuard,
+}
+
+impl Upload {
+    fn prepare(ctx: &Ctx, app: &AppStoreCfg, p: &Paths) -> Result<Self> {
         gh::require()?;
         if !p.metadata.join("description.txt").is_file() {
             bail!(
@@ -87,21 +123,14 @@ pub fn run(ctx: &Ctx, build_only: bool, release: bool) -> Result<()> {
                 app.worktree.display()
             );
         }
-        let c = Credentials::from_env()?;
+        let creds = Credentials::from_env()?;
         // Skipped under --dry-run so a preview works without credentials installed.
         if !ctx.dry_run {
-            c.require_key_file()?;
+            creds.require_key_file()?;
         }
-        creds = Some(c);
-    }
-
-    println!("Preparing {} {} for the App Store…", p.app_name, ctx.version);
-    let mut _stash = None;
-    let mut notes = String::new();
-    if !build_only {
         let branch = git::current_branch()?;
         git::require_not_main(ctx, &branch, "An App Store release")?;
-        _stash = Some(StashGuard::acquire(ctx)?);
+        let stash = StashGuard::acquire(ctx)?;
         git::require_clean_index()?;
         let upstream = git::upstream(&branch)?;
         git::require_in_sync(&branch, &upstream)?;
@@ -114,85 +143,43 @@ pub fn run(ctx: &Ctx, build_only: bool, release: bool) -> Result<()> {
                 ctx.tag
             );
         }
-        notes = ctx.appstore_notes()?;
+        let notes = ctx.appstore_notes()?;
         if notes.is_empty() {
             bail!("no CHANGELOG entry for {}. Add one before releasing.", ctx.version);
         }
-    }
-
-    if ctx.dry_run {
-        if p.whatsnew.is_file() && std::fs::metadata(&p.whatsnew)?.len() > 0 {
-            ui::section("App Store release notes (whatsnew.txt)");
-            print!("{}", std::fs::read_to_string(&p.whatsnew)?);
-            ui::end_section();
-        } else if !notes.is_empty() {
-            ui::section("CHANGELOG entry (whatsnew.txt not yet generated)");
-            println!("{notes}");
-            ui::end_section();
-            println!("  (`release` generates the plain-text App Store version)");
-        }
-        if release {
-            println!("[dry-run] would review metadata + screenshots, verify the uploaded build, then set up App Store version {}", ctx.version);
-        } else {
-            println!("[dry-run] would archive, export, {}upload the IPA", if build_only { "(build only — no) " } else { "validate and " });
-        }
-        println!("Done.  [dry-run] No changes made.");
-        return Ok(());
-    }
-
-    if release {
-        app_store_release(ctx, app, &p, creds.unwrap())
-    } else {
-        testflight(ctx, app, &p, build_only, creds)
+        Ok(Self { creds, notes, _stash: stash })
     }
 }
 
-fn testflight(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, build_only: bool, creds: Option<Credentials>) -> Result<()> {
-    let dir = ctx.root.join(&app.build_dir);
-    let archive = dir.join(format!("{}.xcarchive", p.app_name));
-    let export = dir.join("export");
+/// Build the IPA and, with `creds`, upload it to TestFlight.
+fn testflight(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Option<&Credentials>) -> Result<()> {
     println!("\nArchiving {} {} for iOS…", p.app_name, ctx.version);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    std::fs::create_dir_all(&dir)?;
     // generic/platform=iOS produces a universal arm64 device archive;
     // -allowProvisioningUpdates lets Xcode fetch the App Store profile.
-    xcodebuild(
-        &[
-            "archive", "-project", s(&p.project)?, "-scheme", &p.scheme, "-configuration", "Release",
-            "-destination", "generic/platform=iOS", "-archivePath", s(&archive)?, "-allowProvisioningUpdates",
-        ],
-        &["Build", "Archive"],
-    )?;
-    println!("Exporting IPA…");
-    xcodebuild(
-        &[
-            "-exportArchive", "-archivePath", s(&archive)?, "-exportPath", s(&export)?,
-            "-exportOptionsPlist", s(&app.export_options)?, "-allowProvisioningUpdates",
-        ],
-        &["Export"],
+    let export = xcode::archive_and_export(
+        &p.project,
+        &p.scheme,
+        &p.app_name,
+        "generic/platform=iOS",
+        &["-allowProvisioningUpdates"],
+        &app.export_options,
+        &ctx.root.join(&app.build_dir),
     )?;
     // Xcode 15+ puts the IPA in Apps/; older versions directly in the export dir.
     let ipa = [export.join("Apps").join(format!("{}.ipa", p.app_name)), export.join(format!("{}.ipa", p.app_name))]
         .into_iter()
         .find(|f| f.is_file());
-    let Some(ipa) = ipa else {
-        let _ = sh::run("find", &[s(&export)?, "-maxdepth", "3"]);
-        bail!("IPA not found after export");
-    };
+    let ipa = ipa.ok_or_else(|| xcode::not_exported(&export, &format!("{}.ipa", p.app_name)))?;
     println!("IPA: {}", ipa.display());
-    if build_only {
+    let Some(creds) = creds else {
         println!("\nDone.  Build-only: IPA at {}", ipa.display());
         return Ok(());
-    }
-
-    let creds = creds.context("credentials")?;
+    };
     let altool = |action: &str| {
         sh::run(
             "xcrun",
             &[
-                "altool", action, "-f", s(&ipa)?, "--type", "ios", "--apiKey", &creds.key_id,
+                "altool", action, "-f", sh::path_str(&ipa)?, "--type", "ios", "--apiKey", &creds.key_id,
                 "--apiIssuer", &creds.issuer_id, "--output-format", "normal",
             ],
         )
@@ -228,9 +215,7 @@ fn app_store_release(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Credentials
     let screenshots = review_screenshots(p, app.screenshot_max_age_days)?;
     let whatsnew = read_nonempty(&p.whatsnew)
         .with_context(|| format!("{} not found or empty. Run `release` first to generate and commit it.", p.whatsnew.display()))?;
-    ui::section("What's New (whatsnew.txt)");
-    println!("{whatsnew}");
-    ui::end_section();
+    ui::boxed("What's New (whatsnew.txt)", &whatsnew);
     // whatsnew.txt may have been edited by hand since `release` checked it.
     super::whatsnew::check_forbidden(&whatsnew, &app.notes_forbidden)?;
     ctx.require_confirm("App metadata, release notes and screenshots updated and committed?")?;
@@ -405,8 +390,4 @@ fn read_nonempty(path: &Path) -> Option<String> {
 
 fn name(p: &Path) -> String {
     p.file_name().unwrap_or_default().to_string_lossy().into_owned()
-}
-
-fn s(p: &Path) -> Result<&str> {
-    p.to_str().context("non-UTF-8 path")
 }

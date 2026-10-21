@@ -16,6 +16,19 @@ pub fn short_head() -> Result<String> {
     sh::capture("git", &["rev-parse", "--short", "HEAD"])
 }
 
+/// A commit SHA shortened for display.
+pub fn short(sha: &str) -> &str {
+    &sha[..7.min(sha.len())]
+}
+
+/// Check out main and fast-forward it to origin's.
+pub fn checkout_main_ff(ctx: &Ctx) -> Result<()> {
+    let main = ctx.cfg.main_branch.as_str();
+    ctx.run("git", &["fetch", "origin", main, "--quiet"])?;
+    ctx.run("git", &["checkout", main])?;
+    ctx.run("git", &["merge", "--ff-only", &format!("origin/{main}")])
+}
+
 pub fn require_not_main(ctx: &Ctx, branch: &str, what: &str) -> Result<()> {
     if branch == ctx.cfg.main_branch {
         bail!("{what} must run from a development branch, not '{branch}'.");

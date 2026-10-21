@@ -5,8 +5,9 @@
 use crate::changelog;
 use crate::ctx::Ctx;
 use crate::git::{self, StashGuard};
+use crate::sh;
 use crate::version::{self, VersionFile};
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 pub fn run(ctx: &Ctx, version_override: Option<&str>) -> Result<()> {
     let main = ctx.cfg.main_branch.as_str();
@@ -17,9 +18,7 @@ pub fn run(ctx: &Ctx, version_override: Option<&str>) -> Result<()> {
     git::require_clean_index()?;
 
     println!("Fetching {main}…");
-    ctx.run("git", &["fetch", "origin", main, "--quiet"])?;
-    ctx.run("git", &["checkout", main])?;
-    ctx.run("git", &["merge", "--ff-only", &format!("origin/{main}")])?;
+    git::checkout_main_ff(ctx)?;
 
     let vf = VersionFile::new(&ctx.cfg.version)?;
     // Under --dry-run the checkout above didn't happen, so this reads the
@@ -52,11 +51,10 @@ pub fn run(ctx: &Ctx, version_override: Option<&str>) -> Result<()> {
     let new = changelog::insert_next(&text, &ctx.cfg.changelog, &current, &next)?;
     ctx.write_file(&ctx.changelog_path(), &new, &format!("new '## [{next}]' section"))?;
 
-    let mut add = vec!["add".to_string(), path_str(&vf.path)?, path_str(&ctx.cfg.changelog.file)?];
+    let mut add = vec!["add", sh::path_str(&vf.path)?, sh::path_str(&ctx.cfg.changelog.file)?];
     for f in &ctx.cfg.next.extra_files {
-        add.push(path_str(f)?);
+        add.push(sh::path_str(f)?);
     }
-    let add: Vec<&str> = add.iter().map(String::as_str).collect();
     ctx.run("git", &add)?;
     ctx.run("git", &["commit", "-m", &format!("Bump version to {next}")])?;
     ctx.run("git", &["push", "-u", "origin", &branch])?;
@@ -72,8 +70,4 @@ pub fn run(ctx: &Ctx, version_override: Option<&str>) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn path_str(p: &std::path::Path) -> Result<String> {
-    Ok(p.to_str().context("non-UTF-8 path")?.to_string())
 }

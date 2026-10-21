@@ -23,12 +23,6 @@ pub enum Phase {
     Pre,
 }
 
-impl BuildStep {
-    fn is_ci(&self) -> bool {
-        matches!(self, BuildStep::GithubTagPush { .. } | BuildStep::GithubDispatch { .. })
-    }
-}
-
 /// One line per step, for the dry-run preview.
 pub fn describe(ctx: &Ctx) -> Vec<String> {
     let mut out: Vec<String> = ctx
@@ -63,20 +57,25 @@ pub fn run(ctx: &Ctx, phase: Phase, since: &str, work: &Path) -> Result<Vec<Path
     let assets_dir = work.join("assets");
     std::fs::create_dir_all(&assets_dir)?;
 
+    // CI first, so it builds while the local steps run.
     let mut pending = Vec::new();
-    if phase == Phase::Pre {
-        let sha = crate::git::head()?;
-        for step in steps.iter().filter(|s| s.is_ci()) {
-            pending.push(ci::start(ctx, step, &sha, since)?);
+    let sha = if phase == Phase::Pre { crate::git::head()? } else { String::new() };
+    for step in steps.iter().filter(|_| phase == Phase::Pre) {
+        match step {
+            BuildStep::GithubTagPush { workflow } => pending.push(ci::tag_push(workflow)),
+            BuildStep::GithubDispatch { workflow, artifacts } => {
+                pending.push(ci::dispatch(ctx, workflow, artifacts, &sha)?)
+            }
+            BuildStep::Commands { .. } | BuildStep::XcodeDmg(_) => {}
         }
     }
 
     let mut assets = Vec::new();
-    for step in steps.iter().filter(|s| !s.is_ci()) {
+    for step in steps {
         let result = match step {
             BuildStep::Commands { run, assets } => commands::run(ctx, run, assets),
             BuildStep::XcodeDmg(x) => xcode_dmg::build(ctx, x, phase == Phase::Pre),
-            _ => unreachable!(),
+            BuildStep::GithubTagPush { .. } | BuildStep::GithubDispatch { .. } => continue,
         };
         match result {
             Ok(a) => assets.extend(a),
@@ -88,14 +87,14 @@ pub fn run(ctx: &Ctx, phase: Phase, since: &str, work: &Path) -> Result<Vec<Path
     }
 
     for (i, p) in pending.into_iter().enumerate() {
-        assets.extend(ci::finish(ctx, p, &work.join(format!("ci-{i}")), &assets_dir)?);
+        assets.extend(ci::finish(ctx, p, &sha, since, &work.join(format!("ci-{i}")), &assets_dir)?);
     }
 
     if phase == Phase::Pre {
         for e in &ctx.cfg.release.extra_assets {
             let out = assets_dir.join(&e.name);
             println!("Zipping {}…", e.zip.display());
-            sh::run("zip", &["-rq", out.to_str().context("path")?, e.zip.to_str().context("path")?])?;
+            sh::run("zip", &["-rq", sh::path_str(&out)?, sh::path_str(&e.zip)?])?;
             assets.push(out);
         }
     }
