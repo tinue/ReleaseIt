@@ -1,18 +1,8 @@
 //! `release` — config-driven release tool. See README.md.
 
-mod appstore;
-mod build;
-mod changelog;
-mod config;
-mod ctx;
-mod gh;
-mod git;
-mod modes;
-mod sh;
-mod version;
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{ArgGroup, Parser, Subcommand};
+use releaseit::{appstore, config, ctx, modes, sh, ui, version};
 use std::path::PathBuf;
 
 /// Release cycle:
@@ -76,16 +66,10 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
-    if let Some(dir) = &cli.dir {
-        std::env::set_current_dir(dir).with_context(|| format!("cannot cd to {}", dir.display()))?;
-    }
-    let root = PathBuf::from(
-        sh::try_capture("git", &["rev-parse", "--show-toplevel"]).context("not inside a git repository")?,
-    );
-    std::env::set_current_dir(&root)?;
+    let root = sh::enter_repo_root(cli.dir.as_deref())?;
     let cfg = config::Config::load(&root)?;
     let version = version::VersionFile::new(&cfg.version)?.read(&root)?;
-    let ctx = ctx::Ctx::new(cfg, root, version, cli.dry_run, cli.yes);
+    let ctx = ctx::Ctx::new(cfg, root, version, ui::Ui { dry_run: cli.dry_run, yes: cli.yes });
 
     if let Some(Cmd::Ios { build_only, release }) = cli.cmd {
         let mode_flags = cli.rc || cli.release || cli.next || cli.build_only;

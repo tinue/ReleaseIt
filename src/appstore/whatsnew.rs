@@ -4,7 +4,8 @@
 //! pre-release, so `release ios --release` uploads exactly what was reviewed.
 
 use crate::config::AppStoreCfg;
-use crate::ctx::{self, Ctx};
+use crate::ctx::Ctx;
+use crate::ui;
 use crate::sh;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
@@ -98,9 +99,9 @@ pub fn check_forbidden(text: &str, words: &[String]) -> Result<()> {
 pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
     let text = convert(notes);
     if ctx.dry_run {
-        ctx::section("Draft App Store release notes (whatsnew.txt)");
+        ui::section("Draft App Store release notes (whatsnew.txt)");
         println!("{text}");
-        ctx::end_section();
+        ui::end_section();
         if let Err(e) = check_forbidden(&text, &app.notes_forbidden) {
             println!("Warning: {e:#}");
         }
@@ -110,9 +111,9 @@ pub fn publish(ctx: &Ctx, app: &AppStoreCfg, notes: &str) -> Result<()> {
         bail!("every line of the CHANGELOG entry is marked <!-- appstore: skip --> — nothing left for the App Store.");
     }
     check_forbidden(&text, &app.notes_forbidden)?;
-    ctx::section("App Store release notes (whatsnew.txt)");
+    ui::section("App Store release notes (whatsnew.txt)");
     println!("{text}");
-    ctx::end_section();
+    ui::end_section();
     ctx.require_confirm("Use these release notes for App Store?")?;
 
     let wt = ctx.root.join(&app.worktree);

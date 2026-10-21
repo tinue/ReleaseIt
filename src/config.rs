@@ -28,15 +28,12 @@ pub struct Config {
     #[serde(default)]
     pub build: Vec<BuildStep>,
     pub appstore: Option<AppStoreCfg>,
-    /// Developer ID certificates CI signs with. Only `renew-certs` reads it;
-    /// `release` parses it so that `deny_unknown_fields` still applies.
-    #[allow(dead_code)]
+    /// Developer ID certificates CI signs with; read by `renew-certs`.
     pub certs: Option<CertsCfg>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)] // read by renew-certs
 pub struct CertsCfg {
     /// Apple team ID; the certificate subject's OU must match.
     pub team_id: String,
@@ -51,7 +48,6 @@ pub struct CertsCfg {
 /// Names of the repo secrets the CI workflow imports the certificates from.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
-#[allow(dead_code)] // read by renew-certs
 pub struct CertSecrets {
     pub application: String,
     pub installer: String,

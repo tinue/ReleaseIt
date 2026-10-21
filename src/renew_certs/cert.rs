@@ -60,7 +60,7 @@ impl CertInfo {
     }
 
     pub fn short_sha1(&self) -> &str {
-        &self.sha1[..8.min(self.sha1.len())]
+        short(&self.sha1)
     }
 
     pub fn expires(&self) -> String {
@@ -70,6 +70,11 @@ impl CertInfo {
     pub fn describe(&self) -> String {
         format!("{}…  {}  expires {}", self.short_sha1(), if self.g2 { "G2    " } else { "old CA" }, self.expires())
     }
+}
+
+/// The first 8 hex digits of a SHA-1, for display.
+pub fn short(sha1: &str) -> &str {
+    &sha1[..8.min(sha1.len())]
 }
 
 /// Everything a certificate must satisfy before it goes to CI.
@@ -128,8 +133,20 @@ impl Rules<'_> {
 
 /// The keychain identity to renew with: the latest-expiring one of `kind`
 /// that is G2 and from `team`. Old-CA and foreign certs are never picked.
-pub fn pick<'a>(certs: &'a [CertInfo], kind: Kind, team: &str) -> Option<&'a CertInfo> {
-    certs.iter().filter(|c| c.kind == Some(kind) && c.team == team && c.g2).max_by_key(|c| c.not_after)
+pub fn pick<'a, T: AsRef<CertInfo>>(items: &'a [T], kind: Kind, team: &str) -> Option<&'a T> {
+    items
+        .iter()
+        .filter(|i| {
+            let c = i.as_ref();
+            c.kind == Some(kind) && c.team == team && c.g2
+        })
+        .max_by_key(|i| i.as_ref().not_after)
+}
+
+impl AsRef<CertInfo> for CertInfo {
+    fn as_ref(&self) -> &CertInfo {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +226,6 @@ mod tests {
     }
 
     fn pem_der(pem: &str) -> Vec<u8> {
-        crate::p12::pem_blocks(pem, "CERTIFICATE").remove(0)
+        x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes()).next().unwrap().unwrap().contents
     }
 }

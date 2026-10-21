@@ -14,6 +14,7 @@ use security_framework::os::macos::keychain::SecKeychain;
 use security_framework_sys::import_export::{
     SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION, SecItemExport, SecItemImportExportKeyParameters, kSecFormatPKCS12,
 };
+use releaseit::ui::Ui;
 use std::path::PathBuf;
 
 pub struct Identity {
@@ -74,6 +75,20 @@ impl Keychain {
             .import(p12)
             .context("keychain import failed")
     }
+
+    /// Delete an identity (certificate and private key) by SHA-1.
+    pub fn delete(&self, ui: &Ui, sha1: &str) -> Result<()> {
+        let path = self.path.as_ref().map(|p| p.to_string_lossy());
+        let mut args = vec!["delete-identity", "-Z", sha1];
+        args.extend(path.as_deref());
+        ui.run("security", &args)
+    }
+}
+
+impl AsRef<CertInfo> for Identity {
+    fn as_ref(&self) -> &CertInfo {
+        &self.info
+    }
 }
 
 impl Identity {
@@ -105,6 +120,3 @@ impl Identity {
     }
 }
 
-pub fn exists(ids: &[Identity], sha1: &str) -> bool {
-    ids.iter().any(|i| i.info.sha1 == sha1)
-}

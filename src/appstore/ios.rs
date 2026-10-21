@@ -20,7 +20,8 @@
 use super::asc::{Asc, Credentials};
 use crate::build::xcode::{self, xcodebuild};
 use crate::config::AppStoreCfg;
-use crate::ctx::{self, Ctx};
+use crate::ctx::Ctx;
+use crate::ui;
 use crate::git::{self, StashGuard};
 use crate::{gh, sh};
 use anyhow::{Context, Result, bail};
@@ -121,13 +122,13 @@ pub fn run(ctx: &Ctx, build_only: bool, release: bool) -> Result<()> {
 
     if ctx.dry_run {
         if p.whatsnew.is_file() && std::fs::metadata(&p.whatsnew)?.len() > 0 {
-            ctx::section("App Store release notes (whatsnew.txt)");
+            ui::section("App Store release notes (whatsnew.txt)");
             print!("{}", std::fs::read_to_string(&p.whatsnew)?);
-            ctx::end_section();
+            ui::end_section();
         } else if !notes.is_empty() {
-            ctx::section("CHANGELOG entry (whatsnew.txt not yet generated)");
+            ui::section("CHANGELOG entry (whatsnew.txt not yet generated)");
             println!("{notes}");
-            ctx::end_section();
+            ui::end_section();
             println!("  (`release` generates the plain-text App Store version)");
         }
         if release {
@@ -227,9 +228,9 @@ fn app_store_release(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Credentials
     let screenshots = review_screenshots(p, app.screenshot_max_age_days)?;
     let whatsnew = read_nonempty(&p.whatsnew)
         .with_context(|| format!("{} not found or empty. Run `release` first to generate and commit it.", p.whatsnew.display()))?;
-    ctx::section("What's New (whatsnew.txt)");
+    ui::section("What's New (whatsnew.txt)");
     println!("{whatsnew}");
-    ctx::end_section();
+    ui::end_section();
     // whatsnew.txt may have been edited by hand since `release` checked it.
     super::whatsnew::check_forbidden(&whatsnew, &app.notes_forbidden)?;
     ctx.require_confirm("App metadata, release notes and screenshots updated and committed?")?;
@@ -237,7 +238,7 @@ fn app_store_release(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Credentials
     // Work against the build a previous TestFlight run uploaded, and make
     // sure it's the one matching the local project.
     let asc = Asc::new(creds)?;
-    ctx::section("Verifying uploaded build");
+    ui::section("Verifying uploaded build");
     println!("Looking up app ID for {}…", app.bundle_id);
     let app_id = asc.app_id(&app.bundle_id)?;
     println!("Looking for processed build {} in App Store Connect…", ctx.version);
@@ -254,9 +255,9 @@ fn app_store_release(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Credentials
         );
     }
     println!("  Build {} ({remote_build}) verified — matches the local project.", ctx.version);
-    ctx::end_section();
+    ui::end_section();
 
-    ctx::section("App Store Connect");
+    ui::section("App Store Connect");
     println!("Checking for App Store version {}…", ctx.version);
     let version_id = match asc.find_version(&app_id, &ctx.version)? {
         Some(id) => {
@@ -292,7 +293,7 @@ fn app_store_release(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Credentials
         println!("Uploading {} {display_type} screenshot(s)…", files.len());
         asc.replace_screenshots(&loc_id, display_type, files)?;
     }
-    ctx::end_section();
+    ui::end_section();
 
     println!("App Store Connect steps completed:");
     println!("  ✓ Version {} created / found", ctx.version);
@@ -349,7 +350,7 @@ fn review_screenshots(p: &Paths, max_age_days: u64) -> Result<Vec<(&'static str,
     if all.is_empty() {
         bail!("no screenshots found in {}", p.screenshots.display());
     }
-    ctx::section("Screenshots");
+    ui::section("Screenshots");
     let now = SystemTime::now();
     for f in &all {
         let modified = std::fs::metadata(f)?.modified()?;
@@ -358,7 +359,7 @@ fn review_screenshots(p: &Paths, max_age_days: u64) -> Result<Vec<(&'static str,
         let tag = if age > max_age_days { "STALE" } else { "ok" };
         println!("  [{tag:<6} {age}d]  {date}  {}", name(f));
     }
-    ctx::end_section();
+    ui::end_section();
 
     let mut groups = Vec::new();
     for &(prefix, display_type, (w, h)) in SCREENSHOT_SETS {

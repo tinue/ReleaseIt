@@ -2,6 +2,9 @@
 //! on a dev branch, and a fake `gh` on PATH that keeps release state in files
 //! and logs every call.
 
+mod common;
+
+use common::FakeGh;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -42,8 +45,7 @@ struct Env {
     _tmp: tempfile::TempDir,
     work: PathBuf,
     remote: PathBuf,
-    state: PathBuf,
-    path: String,
+    gh: FakeGh,
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -74,14 +76,7 @@ fn setup_with(yaml: &str) -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let remote = tmp.path().join("origin.git");
     let work = tmp.path().join("work");
-    let state = tmp.path().join("gh");
-    let bin = tmp.path().join("bin");
-    fs::create_dir_all(&state).unwrap();
-    fs::create_dir_all(&bin).unwrap();
-    let gh = bin.join("gh");
-    fs::write(&gh, FAKE_GH).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let gh = FakeGh::install(tmp.path(), FAKE_GH);
 
     git(tmp.path(), &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
     git(tmp.path(), &["clone", "-q", remote.to_str().unwrap(), work.to_str().unwrap()]);
@@ -104,24 +99,11 @@ fn setup_with(yaml: &str) -> Env {
     git(&work, &["commit", "-q", "-m", "dev"]);
     git(&work, &["push", "-q", "-u", "origin", "dev-0.1.0"]);
 
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    Env { _tmp: tmp, work, remote, state, path }
+    Env { _tmp: tmp, work, remote, gh }
 }
 
 fn release(env: &Env, args: &[&str]) -> Output {
-    let out = Command::new(env!("CARGO_BIN_EXE_release"))
-        .current_dir(&env.work)
-        .args(args)
-        .env("PATH", &env.path)
-        .env("GH_STATE", &env.state)
-        .output()
-        .unwrap();
-    eprintln!(
-        "--- release {args:?}\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out
+    env.gh.run(Command::new(env!("CARGO_BIN_EXE_release")).current_dir(&env.work).args(args))
 }
 
 fn ok(env: &Env, args: &[&str]) -> String {
@@ -131,7 +113,7 @@ fn ok(env: &Env, args: &[&str]) -> String {
 }
 
 fn gh_log(env: &Env) -> String {
-    fs::read_to_string(env.state.join("log")).unwrap_or_default()
+    env.gh.log()
 }
 
 #[test]
@@ -150,7 +132,7 @@ fn full_cycle() {
     assert!(log.contains("release create v0.1.0-pre"), "{log}");
     assert!(log.contains("dist/demo.bin"));
     assert!(log.contains("--verify-tag"));
-    assert!(env.state.join("v0.1.0-pre.json").exists());
+    assert!(env.gh.state.join("v0.1.0-pre.json").exists());
     // CHANGELOG untouched by a plain pre-release.
     assert!(fs::read_to_string(env.work.join("CHANGELOG.md")).unwrap().contains("## [0.1.0] - WIP"));
 
@@ -182,7 +164,7 @@ fn full_cycle() {
     assert!(msg.trim_end().ends_with("[skip ci]"));
     assert!(!msg.contains("suffix"), "notes_suffix must not go into the commit");
     assert!(gh_log(&env).contains("release edit v0.1.0-pre --tag v0.1.0"));
-    assert!(env.state.join("v0.1.0.json").exists());
+    assert!(env.gh.state.join("v0.1.0.json").exists());
 
     // --next: dev-0.1.1 from main with bumped version and a new section.
     ok(&env, &["--yes", "--next"]);
@@ -265,8 +247,8 @@ build:
         assert!(create_line.contains(name), "{name} missing: {create_line}");
     }
     assert!(log.contains("run watch 42"), "picked the run for HEAD, not the old one");
-    assert!(env.state.join("v0.1.0-pre.json").exists());
-    let json = fs::read_to_string(env.state.join("v0.1.0-pre.json")).unwrap();
+    assert!(env.gh.state.join("v0.1.0-pre.json").exists());
+    let json = fs::read_to_string(env.gh.state.join("v0.1.0-pre.json")).unwrap();
     assert!(json.contains("[1,2,3]"), "{json}");
 }
 
@@ -303,7 +285,7 @@ build:
     artifacts: []
 "#,
     );
-    fs::write(env.state.join("no-workflow"), "").unwrap();
+    fs::write(env.gh.state.join("no-workflow"), "").unwrap();
     let out = release(&env, &["--yes"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("isn't on the default branch"));
@@ -316,5 +298,5 @@ fn notes_only_release_without_build_steps() {
     ok(&env, &["--yes", "--rc"]);
     assert!(gh_log(&env).contains("release create v0.1.0-pre --title"));
     ok(&env, &["--yes", "--release"]);
-    assert!(env.state.join("v0.1.0.json").exists());
+    assert!(env.gh.state.join("v0.1.0.json").exists());
 }

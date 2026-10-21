@@ -3,25 +3,21 @@
 //! of the project's release.yaml. See README.md.
 
 mod cert;
-#[path = "../config.rs"]
-#[allow(dead_code)]
-mod config;
 mod github;
 mod keychain;
 mod p12;
-#[path = "../sh.rs"]
-#[allow(dead_code)]
-mod sh;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use cert::{CertInfo, KINDS, Kind, Rules};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use config::{CertsCfg, Config};
-use keychain::Keychain;
-use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use keychain::{Identity, Keychain};
+use releaseit::config::{self, CertsCfg, Config};
+use releaseit::ui::{Ui, section};
+use releaseit::{gh, sh};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 const PASSWORD_ENV: &str = "RENEW_CERTS_P12_PASSWORD";
 const CERTS_SAMPLE: &str = "\
@@ -84,40 +80,6 @@ enum Cmd {
     },
 }
 
-/// Dry-run and confirmation handling, as in `release`.
-struct Ui {
-    dry_run: bool,
-    yes: bool,
-}
-
-impl Ui {
-    fn run(&self, prog: &str, args: &[&str]) -> Result<()> {
-        if self.dry_run {
-            println!("[dry-run] {}", sh::display(prog, args));
-            Ok(())
-        } else {
-            sh::run(prog, args)
-        }
-    }
-
-    fn confirm(&self, prompt: &str) -> Result<bool> {
-        if self.yes || self.dry_run {
-            println!("{prompt} [y/N] yes{}", if self.dry_run && !self.yes { "  [dry-run]" } else { "" });
-            return Ok(true);
-        }
-        print!("{prompt} [y/N] ");
-        std::io::stdout().flush()?;
-        let mut line = String::new();
-        std::io::stdin().lock().read_line(&mut line)?;
-        Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
-    }
-}
-
-fn section(title: &str) {
-    let pad = 64usize.saturating_sub(title.chars().count() + 4);
-    println!("\n── {title} {}", "─".repeat(pad));
-}
-
 fn main() {
     match real_main() {
         Ok(code) => std::process::exit(code),
@@ -132,33 +94,27 @@ fn real_main() -> Result<i32> {
     let cli = Cli::parse();
     let ui = Ui { dry_run: cli.dry_run, yes: cli.yes };
     let kc = Keychain { path: cli.keychain };
-    if let Cmd::Guide = cli.cmd {
-        guide(&ui)?;
-        return Ok(0);
-    }
-    if let Some(dir) = &cli.dir {
-        std::env::set_current_dir(dir).with_context(|| format!("cannot cd to {}", dir.display()))?;
-    }
-    let root = PathBuf::from(
-        sh::try_capture("git", &["rev-parse", "--show-toplevel"]).context("not inside a git repository")?,
-    );
-    std::env::set_current_dir(&root)?;
-    let cfg = Config::load(&root)?
-        .certs
-        .with_context(|| format!("no `certs:` section in {}. Add e.g.:\n\n{CERTS_SAMPLE}", config::FILE_NAME))?;
-    github::require()?;
     match cli.cmd {
-        Cmd::Guide => unreachable!(),
-        Cmd::Status => status(&cfg, &kc),
+        Cmd::Guide => guide(&ui).map(|()| 0),
+        Cmd::Status => status(&load(cli.dir.as_deref())?, &kc),
         Cmd::Apply { password, application, installer, only, force } => {
+            let cfg = load(cli.dir.as_deref())?;
             let files = [(Kind::Application, application), (Kind::Installer, installer)]
                 .into_iter()
                 .filter_map(|(k, f)| f.map(|f| (k, f)))
                 .collect();
-            apply(&ui, &cfg, &kc, password, files, only, force)?;
-            Ok(0)
+            apply(&ui, &cfg, &kc, password, files, only, force).map(|()| 0)
         }
     }
+}
+
+/// The project's `certs:` settings, from release.yaml at the repo root.
+fn load(dir: Option<&Path>) -> Result<CertsCfg> {
+    let root = sh::enter_repo_root(dir)?;
+    gh::require()?;
+    Config::load(&root)?
+        .certs
+        .with_context(|| format!("no `certs:` section in {}. Add e.g.:\n\n{CERTS_SAMPLE}", config::FILE_NAME))
 }
 
 fn guide(ui: &Ui) -> Result<()> {
@@ -219,10 +175,10 @@ struct CiCert {
     expires: DateTime<Utc>,
 }
 
-fn ci_cert(cfg: &CertsCfg, kind: Kind) -> Option<CiCert> {
+fn ci_cert(cfg: &CertsCfg, vars: &HashMap<String, String>, kind: Kind) -> Option<CiCert> {
     let (sha_var, exp_var) = variables(cfg, kind);
-    let sha1 = github::variable(&sha_var)?;
-    let expires = DateTime::parse_from_rfc3339(&github::variable(&exp_var)?).ok()?.with_timezone(&Utc);
+    let sha1 = vars.get(&sha_var)?.clone();
+    let expires = DateTime::parse_from_rfc3339(vars.get(&exp_var)?).ok()?.with_timezone(&Utc);
     Some(CiCert { sha1, expires })
 }
 
@@ -231,7 +187,8 @@ fn days_left(t: DateTime<Utc>) -> i64 {
 }
 
 fn status(cfg: &CertsCfg, kc: &Keychain) -> Result<i32> {
-    let ci: Vec<(Kind, Option<CiCert>)> = KINDS.into_iter().map(|k| (k, ci_cert(cfg, k))).collect();
+    let vars = github::variables()?;
+    let ci: Vec<(Kind, Option<CiCert>)> = KINDS.into_iter().map(|k| (k, ci_cert(cfg, &vars, k))).collect();
 
     section("Keychain");
     let ids = kc.identities()?;
@@ -257,7 +214,7 @@ fn status(cfg: &CertsCfg, kc: &Keychain) -> Result<i32> {
                 println!(
                     "{:<26} {}…  expires {}{}",
                     kind.name(),
-                    &c.sha1[..8.min(c.sha1.len())],
+                    cert::short(&c.sha1),
                     c.expires.format("%Y-%m-%d"),
                     expiry_note(c.expires)
                 );
@@ -314,21 +271,21 @@ fn apply(
         bail!("the .p12 password must not be empty");
     }
 
+    let vars = github::variables()?;
+    let ids = kc.identities()?;
+
     // 1. The new identities, as .p12 encrypted with `pw`.
     section("Certificates");
     let mut sources = Vec::new();
     if files.is_empty() {
-        let ids = kc.identities()?;
-        let infos: Vec<CertInfo> = ids.iter().map(|i| i.info.clone()).collect();
         for kind in KINDS.into_iter().filter(|k| only.is_none_or(|o| o == *k)) {
-            let Some(pick) = cert::pick(&infos, kind, &cfg.team_id) else {
+            let Some(id) = cert::pick(&ids, kind, &cfg.team_id) else {
                 bail!(
                     "no G2 {} identity for team {} in the keychain.\n  Create one first: renew-certs guide",
                     kind.name(),
                     cfg.team_id
                 );
             };
-            let id = ids.iter().find(|i| i.info.sha1 == pick.sha1).context("picked identity")?;
             println!("{:<26} keychain {}", kind.name(), id.info.describe());
             sources.push((kind, id.export(&pw)?, None));
         }
@@ -346,7 +303,7 @@ fn apply(
         let info = p12::inspect(&p12, &pw).with_context(|| {
             format!("{}{}", kind.name(), file.as_ref().map(|f| format!(" ({})", f.display())).unwrap_or_default())
         })?;
-        let ci_expires = ci_cert(cfg, kind).map(|c| c.expires);
+        let ci_expires = ci_cert(cfg, &vars, kind).map(|c| c.expires);
         if ci_expires.is_none() {
             println!("  note: no {} recorded for CI yet; skipping the downgrade check", kind.name());
         }
@@ -366,71 +323,58 @@ fn apply(
             cfg.secrets.password
         );
     }
-    if !ui.confirm("Set the secrets?")? {
-        bail!("aborted");
-    }
+    ui.require_confirm("Set the secrets?")?;
 
     // 5. Secrets + variables.
     section("GitHub");
     for r in &renewals {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&r.p12);
-        secret(ui, secret_name(cfg, r.kind), b64.as_bytes())?;
+        github::set_secret(ui, secret_name(cfg, r.kind), b64.as_bytes())?;
         let (sha_var, exp_var) = variables(cfg, r.kind);
         let expires = r.info.not_after.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        ui.run("gh", &github::set_variable_args(&sha_var, &r.info.sha1))?;
-        ui.run("gh", &github::set_variable_args(&exp_var, &expires))?;
+        github::set_variable(ui, &sha_var, &r.info.sha1)?;
+        github::set_variable(ui, &exp_var, &expires)?;
     }
     if both {
-        secret(ui, &cfg.secrets.password, pw.as_bytes())?;
+        github::set_secret(ui, &cfg.secrets.password, pw.as_bytes())?;
     }
 
     // 6.+7. File input: keep the identity on this Mac, remove the export.
-    let ids = kc.identities()?;
-    for r in renewals.iter().filter(|r| r.file.is_some()) {
-        let f = r.file.as_ref().unwrap();
-        if !keychain::exists(&ids, &r.info.sha1) {
-            if ui.dry_run {
-                println!("[dry-run] import {} into the keychain", r.info.short_sha1());
-            } else {
-                kc.import(&r.p12, &pw)?;
-                println!("Imported {} into the keychain.", r.info.short_sha1());
-            }
+    for r in &renewals {
+        let Some(f) = &r.file else { continue };
+        if !ids.iter().any(|i| i.info.sha1 == r.info.sha1) {
+            ui.act(&format!("import {} into the keychain", r.info.short_sha1()), || kc.import(&r.p12, &pw))?;
         }
-        if ui.dry_run {
-            println!("[dry-run] rm {}", f.display());
-        } else {
-            std::fs::remove_file(f).with_context(|| format!("cannot delete {}", f.display()))?;
-            println!("Deleted {}.", f.display());
-        }
+        ui.act(&format!("rm {}", f.display()), || {
+            std::fs::remove_file(f).with_context(|| format!("cannot delete {}", f.display()))
+        })?;
     }
 
-    // 8. Older identities nothing uses any more.
-    cleanup(ui, cfg, kc, &renewals)
-}
-
-fn secret(ui: &Ui, name: &str, value: &[u8]) -> Result<()> {
-    if ui.dry_run {
-        println!("[dry-run] gh secret set {name}  ({} bytes on stdin)", value.len());
-        return Ok(());
-    }
-    github::set_secret(name, value)?;
-    println!("{name} set");
-    Ok(())
+    // 8. Older identities nothing uses any more: what CI keeps for the
+    // types not renewed, plus the new ones, stays.
+    let referenced: Vec<String> = KINDS
+        .into_iter()
+        .filter(|k| renewals.iter().all(|r| r.kind != *k))
+        .filter_map(|k| ci_cert(cfg, &vars, k))
+        .map(|c| c.sha1)
+        .chain(renewals.iter().map(|r| r.info.sha1.clone()))
+        .collect();
+    cleanup(ui, cfg, kc, &ids, &renewals, &referenced)
 }
 
 /// Offer to delete superseded identities from the keychain. CI is unaffected
 /// either way (it imports its own copy from the secret); other projects
 /// renew from the newest identity, which is never offered.
-fn cleanup(ui: &Ui, cfg: &CertsCfg, kc: &Keychain, renewals: &[Renewal]) -> Result<()> {
-    let referenced: Vec<String> = KINDS
-        .into_iter()
-        .filter_map(|k| ci_cert(cfg, k))
-        .map(|c| c.sha1)
-        .chain(renewals.iter().map(|r| r.info.sha1.clone()))
-        .collect();
-    let old: Vec<_> = kc
-        .identities()?
-        .into_iter()
+fn cleanup(
+    ui: &Ui,
+    cfg: &CertsCfg,
+    kc: &Keychain,
+    ids: &[Identity],
+    renewals: &[Renewal],
+    referenced: &[String],
+) -> Result<()> {
+    let old: Vec<&Identity> = ids
+        .iter()
         .filter(|i| {
             renewals.iter().any(|r| {
                 // Same type and team, and superseded: from the original
@@ -448,13 +392,7 @@ fn cleanup(ui: &Ui, cfg: &CertsCfg, kc: &Keychain, renewals: &[Renewal]) -> Resu
     for i in &old {
         let kind = i.info.kind.map(Kind::name).unwrap_or_default();
         if ui.confirm(&format!("Delete {kind} {} from the keychain?", i.info.describe()))? {
-            let mut args = vec!["delete-identity", "-Z", &i.info.sha1];
-            let path;
-            if let Some(p) = &kc.path {
-                path = p.to_string_lossy().into_owned();
-                args.push(&path);
-            }
-            ui.run("security", &args)?;
+            kc.delete(ui, &i.info.sha1)?;
         }
     }
     Ok(())

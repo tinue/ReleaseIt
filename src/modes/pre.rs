@@ -9,7 +9,8 @@
 use crate::build::{self, Phase};
 use crate::changelog;
 use crate::config::BuildStep;
-use crate::ctx::{self, Ctx};
+use crate::ctx::Ctx;
+use crate::ui;
 use crate::git::{self, StashGuard};
 use crate::{appstore, gh, sh};
 use anyhow::{Context, Result, bail};
@@ -62,9 +63,9 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
         appstore::whatsnew::publish(ctx, app, &ctx.appstore_notes()?)?;
     }
 
-    ctx::section(&format!("Release notes for {} (from {})", ctx.pre_tag, ctx.cfg.changelog.file.display()));
+    ui::section(&format!("Release notes for {} (from {})", ctx.pre_tag, ctx.cfg.changelog.file.display()));
     println!("{}", ctx.release_notes()?.trim_end());
-    ctx::end_section();
+    ui::end_section();
     println!("Build plan:");
     for line in build::describe(ctx) {
         println!("  • {line}");

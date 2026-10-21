@@ -3,7 +3,10 @@
 //! keychain, and test certificates from tests/fixtures/certs (issued by fake
 //! "G2" and old-style CAs for team TESTTEAM01).
 
+mod common;
+
 use base64::Engine;
+use common::FakeGh;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -15,7 +18,13 @@ f="$GH_STATE/$3"
 case "$1 $2" in
   "secret set") cat > "$f.secret" ;;
   "variable set") printf %s "$5" > "$f.var" ;;
-  "variable get") [ -f "$f.var" ] || exit 1; cat "$f.var" ;;
+  "variable list")
+    sep=; printf '['
+    for v in "$GH_STATE"/*.var; do
+      [ -e "$v" ] || continue
+      printf '%s{"name":"%s","value":"%s"}' "$sep" "$(basename "$v" .var)" "$(cat "$v")"; sep=,
+    done
+    printf ']' ;;
   *) echo "fake gh: unsupported: $*" >&2; exit 2 ;;
 esac
 "#;
@@ -25,21 +34,14 @@ const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/certs");
 struct Env {
     tmp: tempfile::TempDir,
     work: PathBuf,
-    state: PathBuf,
+    gh: FakeGh,
     keychain: PathBuf,
-    path: String,
 }
 
 impl Env {
     fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let bin = tmp.path().join("bin");
-        let state = tmp.path().join("gh");
-        fs::create_dir_all(&bin).unwrap();
-        fs::create_dir_all(&state).unwrap();
-        let gh = bin.join("gh");
-        fs::write(&gh, FAKE_GH).unwrap();
-        Command::new("chmod").arg("+x").arg(&gh).status().unwrap();
+        let gh = FakeGh::install(tmp.path(), FAKE_GH);
         let work = tmp.path().join("work");
         fs::create_dir_all(work.join("sub")).unwrap();
         assert!(Command::new("git").arg("init").arg("-q").arg(&work).status().unwrap().success());
@@ -49,8 +51,7 @@ impl Env {
         let kc = keychain.to_str().unwrap();
         security(&["create-keychain", "-p", "kc", kc]);
         security(&["unlock-keychain", "-p", "kc", kc]);
-        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-        Env { tmp, work, state, keychain, path }
+        Env { tmp, work, gh, keychain }
     }
 
     /// A copy of a fixture .p12 (apply deletes its inputs).
@@ -62,29 +63,25 @@ impl Env {
 
     fn run(&self, args: &[&str]) -> Output {
         // From a subdirectory: the tool finds the repo root like `release`.
-        let out = Command::new(env!("CARGO_BIN_EXE_renew-certs"))
-            .current_dir(self.work.join("sub"))
-            .args(["--keychain", self.keychain.to_str().unwrap()])
-            .args(args)
-            .env("PATH", &self.path)
-            .env("GH_STATE", &self.state)
-            .env_remove("RENEW_CERTS_P12_PASSWORD")
-            .output()
-            .unwrap();
-        eprintln!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        out
+        self.gh.run(
+            Command::new(env!("CARGO_BIN_EXE_renew-certs"))
+                .current_dir(self.work.join("sub"))
+                .args(["--keychain", self.keychain.to_str().unwrap()])
+                .args(args)
+                .env_remove("RENEW_CERTS_P12_PASSWORD"),
+        )
     }
 
     fn state(&self, name: &str, ext: &str) -> Option<Vec<u8>> {
-        fs::read(self.state.join(format!("{name}.{ext}"))).ok()
+        fs::read(self.gh.state.join(format!("{name}.{ext}"))).ok()
     }
 
     fn set_var(&self, name: &str, value: &str) {
-        fs::write(self.state.join(format!("{name}.var")), value).unwrap();
+        fs::write(self.gh.state.join(format!("{name}.var")), value).unwrap();
     }
 
     fn log(&self) -> String {
-        fs::read_to_string(self.state.join("log")).unwrap_or_default()
+        self.gh.log()
     }
 
     fn identities(&self) -> String {

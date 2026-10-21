@@ -1,36 +1,28 @@
 //! Secrets and variables of the current directory's GitHub repo, via the
 //! `gh` CLI. Secret values go over stdin, never on the command line.
 
-use crate::sh;
-use anyhow::{Context, Result, bail};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use anyhow::{Context, Result};
+use releaseit::sh;
+use releaseit::ui::Ui;
+use serde::Deserialize;
+use std::collections::HashMap;
 
-pub fn require() -> Result<()> {
-    sh::require_tool("gh", "Install with: brew install gh  (then: gh auth login)")
+pub fn set_secret(ui: &Ui, name: &str, value: &[u8]) -> Result<()> {
+    ui.run_with_stdin("gh", &["secret", "set", name], value)
 }
 
-pub fn set_secret(name: &str, value: &[u8]) -> Result<()> {
-    let args = ["secret", "set", name];
-    let mut child = Command::new("gh")
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .context("failed to start `gh`")?;
-    child.stdin.take().context("stdin")?.write_all(value)?;
-    let status = child.wait()?;
-    if !status.success() {
-        bail!("`{}` failed ({status})", sh::display("gh", &args));
+pub fn set_variable(ui: &Ui, name: &str, value: &str) -> Result<()> {
+    ui.run("gh", &["variable", "set", name, "--body", value])
+}
+
+/// All repo variables, in one API call.
+pub fn variables() -> Result<HashMap<String, String>> {
+    #[derive(Deserialize)]
+    struct Var {
+        name: String,
+        value: String,
     }
-    Ok(())
-}
-
-/// A repo variable's value, `None` if it isn't set.
-pub fn variable(name: &str) -> Option<String> {
-    sh::try_capture("gh", &["variable", "get", name]).filter(|v| !v.is_empty())
-}
-
-pub fn set_variable_args<'a>(name: &'a str, value: &'a str) -> [&'a str; 5] {
-    ["variable", "set", name, "--body", value]
+    let json = sh::capture("gh", &["variable", "list", "--json", "name,value"])?;
+    let vars: Vec<Var> = serde_json::from_str(&json).context("unexpected `gh variable list` output")?;
+    Ok(vars.into_iter().map(|v| (v.name, v.value)).collect())
 }
