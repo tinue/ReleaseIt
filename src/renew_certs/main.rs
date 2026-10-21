@@ -123,11 +123,13 @@ Developer ID certificates from the G2 Sub-CA are valid ~13 months. To renew:
    login keychain.
 
 4. renew-certs status   — the new identities show as G2
-   renew-certs apply    — exports both (macOS asks to allow each key export),
-                          checks them and sets the secrets. Run it in the
+   renew-certs apply    — exports both (macOS asks for the keychain password
+                          twice per certificate, so four times), checks
+                          them and sets the secrets. Run it in the
                           root of every project whose release.yaml has a
                           `certs:` section.
-   renew-certs backup   — stores both in 1Password (Private vault).
+   renew-certs backup   — stores both in 1Password (Private vault); the
+                          same four keychain prompts, plus 1Password's.
 
 Old certificates can simply expire; Developer ID certificates can't be
 revoked in the portal, and already-notarized releases stay valid.

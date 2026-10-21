@@ -262,8 +262,8 @@ certs:
   repo's CI has. It exits with 1 when a CI certificate expires within
   `min_days` or isn't recorded yet.
 - `renew-certs apply` picks the latest G2 identity of each type from the
-  keychain and exports both under a new random password (macOS asks once
-  per key to allow the export). It then checks the type, team, G2 issuer,
+  keychain and exports both under a new random password (macOS asks for
+  the keychain password twice per certificate, so four times). It then checks the type, team, G2 issuer,
   remaining validity and that each doesn't expire earlier than what CI has
   (`--force` overrides). After a confirmation it sets the two `.p12` secrets
   and the password secret, records `…_SHA1`/`…_EXPIRES` repo variables for
@@ -274,8 +274,9 @@ certs:
   *Password* item per certificate in the **Private** vault, tagged
   `renew-certs` and titled like `developer-id-application-2027-11-20-47c2819d`
   (type, expiry, SHA-1). 1Password generates the item's password; the `.p12`
-  encrypted with it is attached. Items that already have their `.p12` are
-  skipped, so it can simply be re-run. `apply` reminds you to run it.
+  encrypted with it is attached; the export asks for the keychain password
+  twice per certificate, as in `apply`. Items that already have their `.p12`
+  are skipped, so it can simply be re-run. `apply` reminds you to run it.
 
 The password for CI exists only in memory and in the repo secret: nothing
 needs it later, because a lost or broken secret is replaced by running

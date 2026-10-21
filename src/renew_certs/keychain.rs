@@ -76,8 +76,8 @@ impl AsRef<CertInfo> for Identity {
 }
 
 impl Identity {
-    /// Export as PKCS#12 encrypted with `password`. macOS asks once whether
-    /// to allow exporting the private key.
+    /// Export as PKCS#12 encrypted with `password`. macOS asks for the
+    /// keychain password twice per export before it releases the private key.
     pub fn export(&self, password: &str) -> Result<Vec<u8>> {
         let pass = CFString::new(password);
         let params = SecItemImportExportKeyParameters {
