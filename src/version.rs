@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub struct VersionFile {
     pub path: PathBuf,
     re: Regex,
+    /// Xcode project: a new version also restarts the build number.
+    xcode: bool,
 }
 
 impl VersionFile {
@@ -29,7 +31,7 @@ impl VersionFile {
         if re.captures_len() < 2 {
             bail!("version regex needs a capture group: {pattern}");
         }
-        Ok(Self { path, re })
+        Ok(Self { path, re, xcode: cfg.preset == Preset::Xcode })
     }
 
     pub fn read(&self, root: &Path) -> Result<String> {
@@ -39,14 +41,23 @@ impl VersionFile {
     }
 
     /// Replace every occurrence whose captured version equals `from` with `to`.
+    /// For an Xcode project, also reset every numeric CURRENT_PROJECT_VERSION to 0.
     pub fn write(&self, root: &Path, from: &str, to: &str) -> Result<()> {
         let text = self.load(root)?;
-        let (new, count) = replace_in(&self.re, &text, from, to);
+        let (mut new, count) = replace_in(&self.re, &text, from, to);
         if count == 0 {
             bail!("version {from} not found in {}", self.path.display());
         }
+        if self.xcode {
+            new = reset_build_number(&new);
+        }
         std::fs::write(root.join(&self.path), new)?;
         Ok(())
+    }
+
+    /// Suffix for the --dry-run bump message.
+    pub fn build_reset_note(&self) -> &'static str {
+        if self.xcode { " and reset CURRENT_PROJECT_VERSION to 0" } else { "" }
     }
 
     fn load(&self, root: &Path) -> Result<String> {
@@ -74,6 +85,12 @@ fn replace_in(re: &Regex, text: &str, from: &str, to: &str) -> (String, usize) {
     }
     out.push_str(&text[last..]);
     (out, count)
+}
+
+/// Set numeric build numbers to 0; leaves `$(VAR)` references alone.
+fn reset_build_number(text: &str) -> String {
+    let re = Regex::new(r"(CURRENT_PROJECT_VERSION = )[0-9][0-9.]*;").unwrap();
+    re.replace_all(text, "${1}0;").into_owned()
 }
 
 /// Bump a dotted X.Y.Z version. Missing components count as 0.
@@ -106,10 +123,11 @@ mod tests {
     }
 
     const PBXPROJ: &str = "\
-				CURRENT_PROJECT_VERSION = 0;
+				CURRENT_PROJECT_VERSION = 7;
 				MARKETING_VERSION = 1.8.0;
-				CURRENT_PROJECT_VERSION = 0;
+				CURRENT_PROJECT_VERSION = 7;
 				MARKETING_VERSION = 1.8.0;
+				CURRENT_PROJECT_VERSION = \"$(BUILD)\";
 				MARKETING_VERSION = 1.0;
 				MARKETING_VERSION = 1.0;
 ";
@@ -122,6 +140,19 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(new.matches("MARKETING_VERSION = 1.9.0;").count(), 2);
         assert_eq!(new.matches("MARKETING_VERSION = 1.0;").count(), 2);
+    }
+
+    #[test]
+    fn xcode_write_resets_build_number() {
+        let dir = std::env::temp_dir().join(format!("releaseit-pbx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f"), PBXPROJ).unwrap();
+        vf(Preset::Xcode, None).write(&dir, "1.8.0", "1.9.0").unwrap();
+        let new = std::fs::read_to_string(dir.join("f")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(new.matches("CURRENT_PROJECT_VERSION = 0;").count(), 2);
+        assert!(new.contains("CURRENT_PROJECT_VERSION = \"$(BUILD)\";"));
+        assert_eq!(new.matches("MARKETING_VERSION = 1.9.0;").count(), 2);
     }
 
     #[test]

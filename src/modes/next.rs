@@ -40,7 +40,7 @@ pub fn run(ctx: &Ctx, version_override: Option<&str>) -> Result<()> {
     ctx.run("git", &["checkout", "-b", &branch])?;
 
     if ctx.dry_run {
-        println!("[dry-run] would bump {} from {current} to {next}", vf.path.display());
+        println!("[dry-run] would bump {} from {current} to {next}{}", vf.path.display(), vf.build_reset_note());
     } else {
         vf.write(&ctx.root, &current, &next)?;
     }

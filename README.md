@@ -132,7 +132,8 @@ appstore:                        # optional; see "iOS / App Store"
 
 Version presets: `xcode` reads the first `MARKETING_VERSION` and `--next`
 bumps every occurrence equal to the current version (so test targets at `1.0`
-are left alone); `cargo` the first `^version = "…"`; `cmake`
+are left alone) and resets every numeric `CURRENT_PROJECT_VERSION` (the build
+number) to `0`; `cargo` the first `^version = "…"`; `cmake`
 `set(APP_VERSION "…")`.
 
 ### Build steps
