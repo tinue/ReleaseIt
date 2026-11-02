@@ -90,7 +90,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
 
     if ctx.dry_run {
         println!("Done.  [dry-run] No changes made.");
-        return Ok(());
+        return super::post_release(ctx);
     }
 
     println!("Verifying published release {}…", ctx.tag);
@@ -105,5 +105,5 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         bail!("release {} is still marked as a pre-release", ctx.tag);
     }
     println!("Done.  Release {}: {}  ({} assets)", ctx.tag, r.url, r.assets.len());
-    Ok(())
+    super::post_release(ctx)
 }

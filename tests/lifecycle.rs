@@ -315,3 +315,60 @@ fn notes_only_release_without_build_steps() {
     ok(&env, &["--yes", "--release"]);
     assert!(env.gh.state.join("v0.1.0.json").exists());
 }
+
+#[test]
+fn post_release_runs_after_each_release_kind() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+release:
+  post_release: ["echo ran >> post.log"]
+build:
+  - kind: commands
+    run: ["mkdir -p dist && echo bin > dist/demo.bin"]
+    assets: ["dist/*.bin"]
+"#,
+    );
+    fs::write(env.work.join(".gitignore"), "dist/\npost.log\n").unwrap();
+    git(&env.work, &["add", ".gitignore"]);
+    git(&env.work, &["commit", "-q", "-m", "ignore"]);
+    git(&env.work, &["push", "-q"]);
+    let runs = || fs::read_to_string(env.work.join("post.log")).unwrap_or_default().lines().count();
+
+    // Dry-run and build-only don't run it.
+    let out = ok(&env, &["--dry-run"]);
+    assert!(out.contains("[dry-run] echo ran >> post.log"), "{out}");
+    ok(&env, &["--build-only"]);
+    assert_eq!(runs(), 0);
+
+    ok(&env, &["--yes"]);
+    assert_eq!(runs(), 1);
+    ok(&env, &["--rc", "--yes"]);
+    assert_eq!(runs(), 2);
+    ok(&env, &["--release", "--yes"]);
+    assert_eq!(runs(), 3);
+}
+
+#[test]
+fn failing_post_release_reports_the_published_release() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+release:
+  post_release: ["false"]
+build:
+  - kind: commands
+    run: ["mkdir -p dist && echo bin > dist/demo.bin"]
+    assets: ["dist/*.bin"]
+"#,
+    );
+    let out = release(&env, &["--yes"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the release is published"), "{err}");
+    assert!(env.gh.state.join("v0.1.0-pre.json").exists());
+}

@@ -84,7 +84,7 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     ctx.run("git", &["push", "-f", "origin", &ctx.pre_tag])?;
     if ctx.dry_run {
         println!("Done.  [dry-run] No build, nothing published.");
-        return Ok(());
+        return super::post_release(ctx);
     }
 
     let work = tempfile::tempdir()?;
@@ -99,7 +99,7 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     let r = gh::view(&ctx.pre_tag)
         .with_context(|| format!("the build finished but there is no GitHub release '{}'", ctx.pre_tag))?;
     println!("Done.  Pre-release {}: {}  ({} assets)", ctx.pre_tag, r.url, r.assets.len());
-    Ok(())
+    super::post_release(ctx)
 }
 
 fn stamp_changelog_date(ctx: &Ctx) -> Result<()> {

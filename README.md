@@ -115,6 +115,7 @@ release:
   commit_trailer: ""             # appended to the squash commit, e.g. "[skip ci]"
   extra_assets:                  # zipped from the working tree at pre-release time
     - { zip: examples/, as: MyApp-examples.zip }
+  post_release: []               # shell commands run after release, --rc and --release, see below
 
 build: []                        # build steps, see below
 
@@ -135,6 +136,13 @@ bumps every occurrence equal to the current version (so test targets at `1.0`
 are left alone) and resets every numeric `CURRENT_PROJECT_VERSION` (the build
 number) to `0`; `cargo` the first `^version = "…"`; `cmake`
 `set(APP_VERSION "…")`.
+
+`post_release` commands run from the repository root as the last thing a
+successful `release`, `release --rc` or `release --release` does, not in
+`--build-only`, `--next`, `--reopen` or `release ios`. `--release` doesn't
+build, so a command that uses build output finds the last build there, normally
+the release candidate. If a command fails, `release` reports it and exits with
+an error, but the release stays published.
 
 ### Build steps
 

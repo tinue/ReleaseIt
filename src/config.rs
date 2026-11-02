@@ -172,6 +172,9 @@ pub struct ReleaseCfg {
     pub commit_trailer: String,
     /// Extra assets built from the working tree at pre-release time.
     pub extra_assets: Vec<ExtraAsset>,
+    /// Shell commands run after a successful `release`, `--rc` or `--release`
+    /// (e.g. installing the built app). A failure can't undo the release.
+    pub post_release: Vec<String>,
 }
 
 impl Default for ReleaseCfg {
@@ -181,6 +184,7 @@ impl Default for ReleaseCfg {
             notes_suffix: String::new(),
             commit_trailer: String::new(),
             extra_assets: vec![],
+            post_release: vec![],
         }
     }
 }

@@ -5,7 +5,17 @@ pub mod reopen;
 
 use crate::build::{self, Phase};
 use crate::ctx::Ctx;
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+/// Run `release.post_release`. The release is already out at this point, so a
+/// failure says that it stands.
+fn post_release(ctx: &Ctx) -> Result<()> {
+    for c in &ctx.cfg.release.post_release {
+        ctx.shell(c)
+            .with_context(|| format!("the release is published, but this post_release command failed: {c}"))?;
+    }
+    Ok(())
+}
 
 /// `release --build-only`: checks + local build steps; no git, no GitHub,
 /// no notarization.
