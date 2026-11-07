@@ -205,6 +205,7 @@ orphan branch holding the store metadata:
 appstore/
   metadata/description.txt  keywords.txt  support_url.txt  privacy_url.txt  marketing_url.txt
   screenshots/iphone-NN-*.png (1320×2868)  ipad-NN-*.png (2752×2064)
+              iphoneduo-NN-*.png (iPhone Duo: 1398×2034 outer or 2007×2853 inner, either orientation)
   whatsnew.txt
 ```
 

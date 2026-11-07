@@ -9,8 +9,8 @@
 //!                              manual step left is "Submit for Review".
 //!
 //! Metadata lives in the `appstore` worktree (an orphan branch, gitignored on
-//! the main branches): metadata/*.txt, screenshots/iphone-NN*.png and
-//! ipad-NN*.png, and whatsnew.txt (written by the macOS pre-release).
+//! the main branches): metadata/*.txt, screenshots/iphone-NN*.png,
+//! ipad-NN*.png and iphoneduo-NN*.png, and whatsnew.txt (written by the macOS pre-release).
 //! One-time setup per clone: git worktree add appstore appstore
 //!
 //! Environment: APP_STORE_API_KEY_ID, APP_STORE_API_ISSUER_ID (see asc.rs),
@@ -29,10 +29,18 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Screenshot sets uploaded by --release: file prefix, ASC display type,
-/// required pixel size (either orientation).
-const SCREENSHOT_SETS: &[(&str, &str, (u32, u32))] = &[
-    ("iphone-", "APP_IPHONE_67", (1320, 2868)),
-    ("ipad-", "APP_IPAD_PRO_3GEN_129", (2752, 2064)),
+/// accepted pixel sizes (either orientation). The prefixes don't overlap:
+/// "iphoneduo-" doesn't start with "iphone-".
+///
+/// APP_IPHONE_DUO is missing from Apple's API reference and OpenAPI spec
+/// (4.5.1), but the live API takes it: a create with an unknown type lists
+/// it among the accepted values (checked 2026-11-07), and
+/// GET /v1/appAssetLibraryRefData gives its group, IPHONE_DUO_PROFILE, the
+/// outer (1398×2034) and inner (2007×2853) display sizes.
+const SCREENSHOT_SETS: &[(&str, &str, &[(u32, u32)])] = &[
+    ("iphone-", "APP_IPHONE_67", &[(1320, 2868)]),
+    ("ipad-", "APP_IPAD_PRO_3GEN_129", &[(2752, 2064)]),
+    ("iphoneduo-", "APP_IPHONE_DUO", &[(1398, 2034), (2007, 2853)]),
 ];
 
 struct Paths {
@@ -202,7 +210,7 @@ fn testflight(ctx: &Ctx, app: &AppStoreCfg, p: &Paths, creds: Option<&Credential
     println!("Next steps:");
     println!("  1. Wait ~5–15 minutes for Apple to process the build (App Store Connect → TestFlight).");
     println!("  2. Make sure these are current and committed/pushed in the '{}' worktree:", app.worktree.display());
-    println!("       - screenshots/  (iphone-NN*.png / ipad-NN*.png)");
+    println!("       - screenshots/  (iphone-NN*.png / ipad-NN*.png / iphoneduo-NN*.png)");
     println!("       - metadata/description.txt, keywords.txt, …");
     println!("     (whatsnew.txt was already generated and committed by `release`.)");
     println!("  3. When ready: release ios --release");
@@ -347,7 +355,7 @@ fn review_screenshots(p: &Paths, max_age_days: u64) -> Result<Vec<(&'static str,
     ui::end_section();
 
     let mut groups = Vec::new();
-    for &(prefix, display_type, (w, h)) in SCREENSHOT_SETS {
+    for &(prefix, display_type, sizes) in SCREENSHOT_SETS {
         let files: Vec<PathBuf> = all
             .iter()
             .filter(|f| name(f).starts_with(prefix) && name(f).ends_with(".png"))
@@ -356,8 +364,9 @@ fn review_screenshots(p: &Paths, max_age_days: u64) -> Result<Vec<(&'static str,
         for f in &files {
             let size = imagesize::size(f).with_context(|| format!("cannot read image size of {}", f.display()))?;
             let (fw, fh) = (size.width as u32, size.height as u32);
-            if (fw, fh) != (w, h) && (fh, fw) != (w, h) {
-                bail!("{} is {fw}×{fh} px; expected {w}×{h} for {display_type}", name(f));
+            if !sizes.iter().any(|&s| s == (fw, fh) || s == (fh, fw)) {
+                let expected: Vec<String> = sizes.iter().map(|(w, h)| format!("{w}×{h}")).collect();
+                bail!("{} is {fw}×{fh} px; expected {} for {display_type}", name(f), expected.join(" or "));
             }
         }
         if !files.is_empty() {
@@ -366,7 +375,7 @@ fn review_screenshots(p: &Paths, max_age_days: u64) -> Result<Vec<(&'static str,
     }
     if groups.is_empty() {
         bail!(
-            "no iphone-*.png / ipad-*.png screenshots in {}; rename them to match the convention",
+            "no iphone-*.png / ipad-*.png / iphoneduo-*.png screenshots in {}; rename them to match the convention",
             p.screenshots.display()
         );
     }
