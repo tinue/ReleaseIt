@@ -37,7 +37,10 @@ use std::time::SystemTime;
 /// it among the accepted values (checked 2026-11-07), and
 /// GET /v1/appAssetLibraryRefData gives its group, IPHONE_DUO_PROFILE, the
 /// outer (1398×2034) and inner (2007×2853) display sizes.
-const SCREENSHOT_SETS: &[(&str, &str, &[(u32, u32)])] = &[
+/// File prefix, App Store display type, accepted pixel sizes.
+type ScreenshotSet = (&'static str, &'static str, &'static [(u32, u32)]);
+
+const SCREENSHOT_SETS: &[ScreenshotSet] = &[
     ("iphone-", "APP_IPHONE_67", &[(1320, 2868)]),
     ("ipad-", "APP_IPAD_PRO_3GEN_129", &[(2752, 2064)]),
     ("iphoneduo-", "APP_IPHONE_DUO", &[(1398, 2034), (2007, 2853)]),
