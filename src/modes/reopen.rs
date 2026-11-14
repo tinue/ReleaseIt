@@ -11,7 +11,7 @@ use anyhow::{Result, bail};
 
 pub fn run(ctx: &Ctx) -> Result<()> {
     let branch = git::current_branch()?;
-    git::require_not_main(ctx, &branch, "--reopen")?;
+    git::require_release_branch(ctx, &branch, "--reopen")?;
     if sh::succeeds("git", &["rev-parse", "-q", "--verify", &format!("refs/tags/{}", ctx.tag)]) {
         bail!("{} is already released (tag '{}' exists). Nothing to reopen.", ctx.version, ctx.tag);
     }

@@ -65,7 +65,8 @@ pub fn reopen(text: &str, version: &str, wip_marker: &str) -> Option<String> {
 
 /// Insert an empty "## [next] - <wip>" section, plus compare links if
 /// configured. Errors if the insertion point isn't there.
-pub fn insert_next(text: &str, cfg: &ChangelogCfg, current: &str, next: &str) -> Result<String> {
+/// `tag_prefix` goes before the tags of the compare links (`Config::tag_prefix`).
+pub fn insert_next(text: &str, cfg: &ChangelogCfg, tag_prefix: &str, current: &str, next: &str) -> Result<String> {
     let header = format!("## [{next}] - {}", cfg.wip_marker);
     let after: fn(&str) -> bool = match cfg.insert_next {
         InsertNext::Top => |_| true,
@@ -88,8 +89,8 @@ pub fn insert_next(text: &str, cfg: &ChangelogCfg, current: &str, next: &str) ->
             |l| l.starts_with("[Unreleased]: "),
             |_| {
                 vec![
-                    format!("[Unreleased]: {repo}/compare/v{next}...HEAD"),
-                    format!("[{next}]: {repo}/compare/v{current}...v{next}"),
+                    format!("[Unreleased]: {repo}/compare/{tag_prefix}v{next}...HEAD"),
+                    format!("[{next}]: {repo}/compare/{tag_prefix}v{current}...{tag_prefix}v{next}"),
                 ]
             },
         )
@@ -242,7 +243,7 @@ mod tests {
     #[test]
     fn insert_top() {
         let cfg = ChangelogCfg::default();
-        let s = insert_next(SIMPLE, &cfg, "1.8.0", "1.9.0").unwrap();
+        let s = insert_next(SIMPLE, &cfg, "", "1.8.0", "1.9.0").unwrap();
         assert!(s.starts_with("# Changelog\n\n## [1.9.0] - work in progress\n\n## [1.8.0]"));
     }
 
@@ -255,10 +256,10 @@ mod tests {
             ..Default::default()
         };
         let t = "# C\n\n## [Unreleased]\n\n## [0.3.6] - 2026-10-20\n- a\n\n[Unreleased]: https://github.com/tinue/SharpDataExchange/compare/v0.3.6...HEAD\n[0.3.6]: https://github.com/tinue/SharpDataExchange/compare/v0.3.5...v0.3.6\n";
-        let s = insert_next(t, &cfg, "0.3.6", "0.3.7").unwrap();
+        let s = insert_next(t, &cfg, "", "0.3.6", "0.3.7").unwrap();
         assert!(s.contains("## [Unreleased]\n\n## [0.3.7] - WIP\n\n## [0.3.6]"));
         assert!(s.contains("[Unreleased]: https://github.com/tinue/SharpDataExchange/compare/v0.3.7...HEAD\n[0.3.7]: https://github.com/tinue/SharpDataExchange/compare/v0.3.6...v0.3.7\n[0.3.6]:"));
-        assert!(insert_next("# C\n", &cfg, "1", "2").is_err());
+        assert!(insert_next("# C\n", &cfg, "", "1", "2").is_err());
     }
 
     #[test]

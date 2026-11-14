@@ -372,3 +372,96 @@ build:
     assert!(err.contains("the release is published"), "{err}");
     assert!(env.gh.state.join("v0.1.0-pre.json").exists());
 }
+
+/// One product of a repository with several: `release -C products/p` on
+/// main, prefixed tags, no squash, no dev branch, never "Latest".
+#[test]
+fn trunk_cycle_in_a_product_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let remote = tmp.path().join("origin.git");
+    let work = tmp.path().join("work");
+    let gh = FakeGh::install(tmp.path(), FAKE_GH);
+    git(tmp.path(), &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+    git(tmp.path(), &["clone", "-q", remote.to_str().unwrap(), work.to_str().unwrap()]);
+    git(&work, &["config", "user.email", "t@example.com"]);
+    git(&work, &["config", "user.name", "Test"]);
+    git(&work, &["checkout", "-q", "-b", "main"]);
+    let p = work.join("products/p");
+    fs::create_dir_all(&p).unwrap();
+    fs::create_dir_all(work.join("products/q")).unwrap();
+    fs::write(work.join(".gitignore"), "dist/\n").unwrap();
+    fs::write(p.join("Cargo.toml"), "[package]\nname = \"p\"\nversion = \"0.1.0\"\n").unwrap();
+    fs::write(p.join("CHANGELOG.md"), "# Changelog\n\n## [0.1.0] - WIP\n\n- **Feature** first\n").unwrap();
+    fs::write(
+        p.join("release.yaml"),
+        r#"
+name: P
+tag_prefix: p-
+branching: trunk
+maintenance_branches: ["p/*.x"]
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+next: { bump: patch }
+release: { latest: false }
+build:
+  - kind: commands
+    run: ["mkdir -p dist && echo bin > dist/p.bin"]
+    assets: ["dist/*.bin"]
+"#,
+    )
+    .unwrap();
+    fs::write(work.join("products/q/release.yaml"), "name: Q\n").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "init"]);
+    git(&work, &["push", "-q", "-u", "origin", "main"]);
+
+    let run = |args: &[&str]| {
+        let mut all = vec!["-C", "products/p"];
+        all.extend_from_slice(args);
+        gh.run(Command::new(env!("CARGO_BIN_EXE_release")).current_dir(&work).args(&all))
+    };
+    let ok = |args: &[&str]| assert!(run(args).status.success(), "release {args:?} failed");
+
+    // Pre-release from main, with the prefixed tag; the asset is built in the product directory.
+    ok(&["--yes"]);
+    assert_eq!(git(&remote, &["tag"]), "p-v0.1.0-pre");
+    assert!(gh.log().contains("release create p-v0.1.0-pre ") && gh.log().contains("products/p/dist/p.bin"), "{}", gh.log());
+
+    // --rc dates the entry on main.
+    ok(&["--yes", "--rc"]);
+    let pre_commit = git(&work, &["rev-parse", "p-v0.1.0-pre^{commit}"]);
+    assert!(fs::read_to_string(p.join("CHANGELOG.md")).unwrap().contains("## [0.1.0] - 20"));
+
+    // Main moves on (another product) before the promotion.
+    fs::write(work.join("products/q/x.txt"), "q\n").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "work on q"]);
+    git(&work, &["push", "-q"]);
+
+    // --release: the real tag on the pre-release's commit, no merge commit, not "Latest".
+    ok(&["--yes", "--release"]);
+    assert_eq!(git(&remote, &["tag"]), "p-v0.1.0");
+    assert_eq!(git(&remote, &["rev-parse", "p-v0.1.0^{commit}"]), pre_commit);
+    assert_eq!(git(&remote, &["log", "-1", "--format=%s", "main"]), "work on q");
+    assert!(gh.log().contains("release edit p-v0.1.0-pre --tag p-v0.1.0"));
+    assert!(gh.log().contains("--latest=false"));
+    assert_eq!(git(&work, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+
+    // --next bumps on main; no branch is cut.
+    ok(&["--yes", "--next"]);
+    assert_eq!(git(&work, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+    assert!(fs::read_to_string(p.join("Cargo.toml")).unwrap().contains("version = \"0.1.1\""));
+    assert_eq!(git(&remote, &["log", "-1", "--format=%s", "main"]), "Bump P version to 0.1.1");
+    assert_eq!(git(&remote, &["branch", "--list"]).lines().count(), 1);
+
+    // A feature branch is not a release branch; a maintenance branch is.
+    git(&work, &["checkout", "-q", "-b", "feature"]);
+    git(&work, &["push", "-q", "-u", "origin", "feature"]);
+    assert!(!run(&["--yes", "--dry-run"]).status.success());
+    git(&work, &["checkout", "-q", "-b", "p/0.1.x"]);
+    let cl = fs::read_to_string(p.join("CHANGELOG.md")).unwrap().replace("## [0.1.1] - WIP\n", "## [0.1.1] - WIP\n\n- **Fix** one\n");
+    fs::write(p.join("CHANGELOG.md"), cl).unwrap();
+    git(&work, &["commit", "-q", "-am", "fix"]);
+    git(&work, &["push", "-q", "-u", "origin", "p/0.1.x"]);
+    assert!(run(&["--yes", "--dry-run"]).status.success());
+}

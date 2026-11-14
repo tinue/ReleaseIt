@@ -4,10 +4,15 @@
 //! already-uploaded assets, no rebuild, no download/re-upload; the same thing
 //! GitHub's own "promote to release" does.
 //!
+//! With `branching: trunk` there is no merge: the real tag goes on the commit
+//! the pre-release was built from (its -pre tag), on main or a maintenance
+//! branch, however far that branch has moved on since.
+//!
 //! Known, accepted quirk: binaries that embed a git-describe build id still
 //! show "vX.Y.Z-pre", since promotion preserves the assets.
 
 use crate::changelog;
+use crate::config::Branching;
 use crate::ctx::Ctx;
 use crate::gh;
 use crate::git::{self, StashGuard};
@@ -17,7 +22,7 @@ use anyhow::{Context, Result, bail};
 pub fn run(ctx: &Ctx) -> Result<()> {
     gh::require()?;
     let branch = git::current_branch()?;
-    git::require_not_main(ctx, &branch, "--release")?;
+    git::require_release_branch(ctx, &branch, "--release")?;
     let _stash = StashGuard::acquire(ctx)?;
     git::require_clean_index()?;
 
@@ -41,6 +46,31 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     }
     let pre_assets = pre.assets.len();
 
+    if ctx.cfg.branching == Branching::Trunk {
+        tag_pre_release_commit(ctx, pre_assets)?;
+    } else {
+        squash_merge_and_tag(ctx, &branch, pre_assets)?;
+    }
+    retarget_and_verify(ctx, pre_assets)
+}
+
+/// Trunk: tag the commit the -pre tag points at; nothing is merged.
+fn tag_pre_release_commit(ctx: &Ctx, pre_assets: usize) -> Result<()> {
+    ctx.run("git", &["fetch", "origin", "--quiet", &format!("refs/tags/{0}:refs/tags/{0}", ctx.pre_tag), "--force"])?;
+    let commit = sh::capture("git", &["rev-parse", &format!("{}^{{commit}}", ctx.pre_tag)])
+        .with_context(|| format!("no tag '{}' to promote", ctx.pre_tag))?;
+    ctx.require_confirm(&format!(
+        "Promote {} ({pre_assets} assets) to {}: tag {} (the pre-release's commit), publish?",
+        ctx.pre_tag, ctx.tag, git::short(&commit)
+    ))?;
+    println!("Tagging {} on {}…", ctx.tag, git::short(&commit));
+    ctx.run("git", &["tag", &ctx.tag, &commit])?;
+    ctx.run("git", &["push", "origin", &ctx.tag])?;
+    Ok(())
+}
+
+/// Dev branches: squash-merge the branch into main and tag that commit.
+fn squash_merge_and_tag(ctx: &Ctx, branch: &str, pre_assets: usize) -> Result<()> {
     ctx.require_confirm(&format!(
         "Promote {} ({pre_assets} assets) to {}: squash-merge '{branch}' into {}, tag, publish?",
         ctx.pre_tag, ctx.tag, ctx.cfg.main_branch
@@ -63,15 +93,18 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     let main = ctx.cfg.main_branch.as_str();
     println!("Squash-merging {branch} into {main}…");
     git::checkout_main_ff(ctx)?;
-    ctx.run("git", &["merge", "--squash", &branch])?;
+    ctx.run("git", &["merge", "--squash", branch])?;
     ctx.run("git", &["commit", "-m", &msg])?;
     ctx.run("git", &["push", "origin", main])?;
 
     println!("Tagging {} on {main}…", ctx.tag);
     ctx.run("git", &["tag", &ctx.tag])?;
     ctx.run("git", &["push", "origin", &ctx.tag])?;
-    ctx.run("git", &["checkout", &branch])?;
+    ctx.run("git", &["checkout", branch])?;
+    Ok(())
+}
 
+fn retarget_and_verify(ctx: &Ctx, pre_assets: usize) -> Result<()> {
     let notes_file = ctx.notes_file()?;
     let title = ctx.cfg.title(&ctx.version);
     println!("Retargeting {}'s GitHub release onto {} in place (no re-upload)…", ctx.pre_tag, ctx.tag);
@@ -80,7 +113,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         &[
             "release", "edit", &ctx.pre_tag, "--tag", &ctx.tag, "--title", &title,
             "--notes-file", sh::path_str(notes_file.path())?,
-            "--prerelease=false", "--latest",
+            "--prerelease=false", if ctx.cfg.release.latest { "--latest" } else { "--latest=false" },
         ],
     )?;
 

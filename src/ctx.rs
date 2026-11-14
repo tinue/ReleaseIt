@@ -14,10 +14,11 @@ pub struct Ctx {
     pub cfg: Config,
     pub root: PathBuf,
     pub version: String,
-    /// The real release tag, "vX.Y.Z". Created exactly once, by --release, on
-    /// the squash commit on main.
+    /// The real release tag, "<tag_prefix>vX.Y.Z". Created exactly once, by
+    /// --release: on the squash commit on main, or (trunk) on the pre-release's
+    /// commit.
     pub tag: String,
-    /// The disposable pre-release tag, "vX.Y.Z-pre". Pre-releases are cut many
+    /// The disposable pre-release tag, "<tag_prefix>vX.Y.Z-pre". Pre-releases are cut many
     /// times per version while iterating, so they must not use the real tag:
     /// `gh release create` auto-creates an unknown tag on the current commit,
     /// which is how a real tag once ended up on the previous release's commit
@@ -38,8 +39,8 @@ impl Deref for Ctx {
 impl Ctx {
     pub fn new(cfg: Config, root: PathBuf, version: String, ui: Ui) -> Self {
         Self {
-            tag: format!("v{version}"),
-            pre_tag: format!("v{version}-pre"),
+            tag: format!("{}v{version}", cfg.tag_prefix),
+            pre_tag: format!("{}v{version}-pre", cfg.tag_prefix),
             cfg,
             root,
             version,

@@ -194,6 +194,39 @@ xcrun notarytool store-credentials notarytool \
 If create-dmg fails with error -1743, grant your terminal app *Automation →
 Finder* in System Settings → Privacy & Security; `release` waits and retries.
 
+## Several products in one repository
+
+A repository that holds several products, each released on its own
+(for example `products/calc-u-59/` and `products/calc-u-1600/`), gives each
+product directory its own `release.yaml` and runs `release -C <dir>`. When
+`<dir>` holds a `release.yaml`, it is the project root: the config, the
+version file, the CHANGELOG, build commands, extra assets and the App Store
+worktree are taken relative to it; git and `gh` still work on the whole
+repository. Three keys make the products' releases independent:
+
+```yaml
+name: Calc-U-59
+tag_prefix: calc-u-59-            # tags calc-u-59-v3.0.0, calc-u-59-v3.0.0-pre
+branching: trunk                  # no dev branches, no squash
+maintenance_branches: ["calc-u-59/*.x"]
+release:
+  latest: false                   # GitHub's "Latest" never points at one product
+```
+
+With `branching: trunk`:
+- `release`, `--rc` and `--reopen` run on `main` (or a maintenance branch);
+  `--rc` commits the CHANGELOG date there.
+- `--release` merges nothing: it puts the real tag on the commit of the
+  `-pre` tag, the commit the pre-release was built from, even if `main` has
+  moved on since (another product's work), then retargets the GitHub release
+  as usual.
+- `--next` cuts no branch: it bumps the version on the branch it runs on and
+  commits "Bump <name> version to X.Y.Z".
+- A patch of an older version runs on a maintenance branch cut from its
+  release tag (`git switch -c calc-u-59/2.4.x calc-u-59-v2.4.0`).
+
+`branching: dev` (the default) is the cycle described above, unchanged.
+
 ## iOS / App Store
 
 With an `appstore:` section, every macOS pre-release also converts the

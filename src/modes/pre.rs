@@ -8,7 +8,7 @@
 
 use crate::build::{self, Phase};
 use crate::changelog;
-use crate::config::BuildStep;
+use crate::config::{Branching, BuildStep};
 use crate::ctx::Ctx;
 use crate::git::{self, StashGuard};
 use crate::ui;
@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     gh::require()?;
     let branch = git::current_branch()?;
-    git::require_not_main(ctx, &branch, "A pre-release")?;
+    git::require_release_branch(ctx, &branch, "A pre-release")?;
     let _stash = StashGuard::acquire(ctx)?;
     git::require_clean_index()?;
     let upstream = git::upstream(&branch)?;
@@ -37,7 +37,9 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
         stamp_changelog_date(ctx)?;
     }
     git::require_in_sync(&branch, &upstream)?;
-    git::require_ff_into_main(ctx, &branch)?;
+    if ctx.cfg.branching == Branching::Dev {
+        git::require_ff_into_main(ctx, &branch)?;
+    }
 
     println!("{} {}  (pre-release tag: {})", ctx.cfg.name, ctx.version, ctx.pre_tag);
     for c in &ctx.cfg.checks {

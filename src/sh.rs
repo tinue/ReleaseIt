@@ -112,13 +112,17 @@ pub fn require_tool(prog: &str, hint: &str) -> Result<()> {
     Ok(())
 }
 
-/// `cd` to `dir` (the `-C` option), then to the root of its git repository,
-/// which both tools treat as the project root; return that root.
+/// `cd` to `dir` (the `-C` option) and find the project root, which both
+/// tools work in: `dir` itself when it holds a `release.yaml` (a product
+/// directory in a repository with several products), otherwise the root of
+/// its git repository; return that root.
 pub fn enter_repo_root(dir: Option<&Path>) -> Result<PathBuf> {
     if let Some(dir) = dir {
         std::env::set_current_dir(dir).with_context(|| format!("cannot cd to {}", dir.display()))?;
     }
-    let root = PathBuf::from(try_capture("git", &["rev-parse", "--show-toplevel"]).context("not inside a git repository")?);
+    let repo = PathBuf::from(try_capture("git", &["rev-parse", "--show-toplevel"]).context("not inside a git repository")?);
+    let here = std::env::current_dir()?;
+    let root = if dir.is_some() && here.join(crate::config::FILE_NAME).is_file() { here } else { repo };
     std::env::set_current_dir(&root)?;
     Ok(root)
 }

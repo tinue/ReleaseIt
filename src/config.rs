@@ -1,4 +1,5 @@
-//! `release.yaml` — one per project, at the repository root.
+//! `release.yaml` — one per project: at the repository root, or in a product
+//! directory of a repository that holds several products (`release -C <dir>`).
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -13,6 +14,19 @@ pub struct Config {
     pub name: String,
     #[serde(default = "default_main_branch")]
     pub main_branch: String,
+    /// Prefix of every tag of this project, for a repository with several
+    /// products ("calc-u-59-" gives "calc-u-59-v3.0.0" and
+    /// "calc-u-59-v3.0.0-pre"). Empty: "vX.Y.Z".
+    #[serde(default)]
+    pub tag_prefix: String,
+    /// How releases relate to branches; see `Branching`.
+    #[serde(default)]
+    pub branching: Branching,
+    /// With `branching: trunk`: branches besides main a release may run from
+    /// (patches of an older version), as patterns where `*` matches any run
+    /// of characters, e.g. "calc-u-59/*.x".
+    #[serde(default)]
+    pub maintenance_branches: Vec<String>,
     pub version: VersionCfg,
     #[serde(default)]
     pub changelog: ChangelogCfg,
@@ -70,6 +84,20 @@ fn default_min_days() -> i64 {
 
 fn default_main_branch() -> String {
     "main".into()
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Branching {
+    /// Releases run on a dev branch ("dev-X.Y.Z"); `--release` squash-merges
+    /// it into main; `--next` cuts the next dev branch.
+    #[default]
+    Dev,
+    /// Releases run on main (or a maintenance branch); `--release` tags the
+    /// pre-release's commit without a merge; `--next` bumps the version on
+    /// the branch it runs on. For a repository whose products release from
+    /// one main.
+    Trunk,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +203,9 @@ pub struct ReleaseCfg {
     /// Shell commands run after a successful `release`, `--rc` or `--release`
     /// (e.g. installing the built app). A failure can't undo the release.
     pub post_release: Vec<String>,
+    /// Mark the promoted release as GitHub's "Latest". False in a repository
+    /// with several products, so "latest" never points at the wrong one.
+    pub latest: bool,
 }
 
 impl Default for ReleaseCfg {
@@ -185,6 +216,7 @@ impl Default for ReleaseCfg {
             commit_trailer: String::new(),
             extra_assets: vec![],
             post_release: vec![],
+            latest: true,
         }
     }
 }
@@ -332,6 +364,11 @@ impl Config {
         Ok(())
     }
 
+    /// Whether a release may run from `branch` under `branching: trunk`.
+    pub fn is_trunk_release_branch(&self, branch: &str) -> bool {
+        branch == self.main_branch || self.maintenance_branches.iter().any(|p| glob_match(p, branch))
+    }
+
     pub fn title(&self, version: &str) -> String {
         self.release
             .title
@@ -413,5 +450,55 @@ build:
     #[test]
     fn regex_preset_needs_regex() {
         assert!(Config::parse("name: X\nversion: { preset: regex, file: f }\n").is_err());
+    }
+}
+
+/// `pattern` matches `text`, where `*` stands for any run of characters.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !text.starts_with(first) || !text[first.len()..].ends_with(last) || text.len() < first.len() + last.len() {
+        return false;
+    }
+    let mut rest = &text[first.len()..text.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+
+    #[test]
+    fn globs() {
+        assert!(glob_match("calc-u-59/*.x", "calc-u-59/2.4.x"));
+        assert!(!glob_match("calc-u-59/*.x", "calc-u-1600/1.0.x"));
+        assert!(glob_match("main", "main"));
+        assert!(!glob_match("main", "mainline"));
+        assert!(glob_match("a*b*c", "aXbYc"));
+        assert!(!glob_match("a*b*c", "aXc"));
+    }
+
+    #[test]
+    fn several_products_keys() {
+        let c = Config::parse(
+            "name: P\ntag_prefix: p-\nbranching: trunk\nmaintenance_branches: [\"p/*.x\"]\nversion: { preset: cargo }\nrelease: { latest: false }\n",
+        )
+        .unwrap();
+        assert_eq!(c.tag_prefix, "p-");
+        assert_eq!(c.branching, Branching::Trunk);
+        assert!(!c.release.latest);
+        assert!(c.is_trunk_release_branch("main") && c.is_trunk_release_branch("p/1.2.x"));
+        assert!(!c.is_trunk_release_branch("feature"));
+        let d = Config::parse("name: P\nversion: { preset: cargo }\n").unwrap();
+        assert_eq!((d.tag_prefix.as_str(), d.branching, d.release.latest), ("", Branching::Dev, true));
     }
 }
