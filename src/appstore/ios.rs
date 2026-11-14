@@ -140,7 +140,7 @@ impl Upload {
             creds.require_key_file()?;
         }
         let branch = git::current_branch()?;
-        git::require_not_main(ctx, &branch, "An App Store release")?;
+        git::require_release_branch(ctx, &branch, "An App Store release")?;
         let stash = StashGuard::acquire(ctx)?;
         git::require_clean_index()?;
         let upstream = git::upstream(&branch)?;
