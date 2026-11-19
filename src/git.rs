@@ -1,5 +1,6 @@
 //! Git pre-conditions and helpers shared by all modes.
 
+use crate::config::Branching;
 use crate::ctx::Ctx;
 use crate::sh;
 use anyhow::{Result, bail};
@@ -34,6 +35,20 @@ pub fn require_not_main(ctx: &Ctx, branch: &str, what: &str) -> Result<()> {
         bail!("{what} must run from a development branch, not '{branch}'.");
     }
     Ok(())
+}
+
+/// The branch rule of `branching`: a dev branch (not main), or under trunk
+/// main or a maintenance branch.
+pub fn require_release_branch(ctx: &Ctx, branch: &str, what: &str) -> Result<()> {
+    match ctx.cfg.branching {
+        Branching::Dev => require_not_main(ctx, branch, what),
+        Branching::Trunk if ctx.cfg.is_trunk_release_branch(branch) => Ok(()),
+        Branching::Trunk => bail!(
+            "{what} must run from '{}' or a maintenance branch ({}), not '{branch}'.",
+            ctx.cfg.main_branch,
+            if ctx.cfg.maintenance_branches.is_empty() { "none configured".to_string() } else { ctx.cfg.maintenance_branches.join(", ") }
+        ),
+    }
 }
 
 /// Unstaged changes are the one pre-condition we recover from instead of
