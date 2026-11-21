@@ -30,6 +30,7 @@ case "$1 $2" in
     echo "$j" | sed "s#https://x/$tag#https://x/$new#" > "$GH_STATE/$new.json"
     [ "$new" != "$tag" ] && rm "$GH_STATE/$tag.json"; true ;;
   "release upload") ;;
+  "release download") cp "$GH_STATE/files/$5" "$7/" ;;
   "workflow run") ;;
   "workflow view") if [ -e "$GH_STATE/no-workflow" ]; then exit 1; fi ;;
   "run list")
@@ -371,6 +372,78 @@ build:
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("the release is published"), "{err}");
     assert!(env.gh.state.join("v0.1.0-pre.json").exists());
+}
+
+/// `release` and `--rc` install the configured binary on this Mac, from the
+/// local build or (when CI published it) downloaded from the pre-release;
+/// `--release` and `--build-only` don't.
+#[test]
+fn installs_binaries_after_release_and_rc() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+release:
+  install:
+    bin_dir: ../bin-out
+    binaries:
+      - { asset: "demo-mac*.tar.gz", path: demo/bin/demo }
+build:
+  - kind: commands
+    run: ["mkdir -p dist/demo/bin && echo v1 > dist/demo/bin/demo && tar czf dist/demo-macos.tar.gz -C dist demo"]
+    assets: ["dist/*.tar.gz"]
+"#,
+    );
+    let installed = env.work.join("../bin-out/demo");
+    let out = ok(&env, &["--dry-run"]);
+    assert!(out.contains("install demo from demo-mac*.tar.gz into ../bin-out"), "{out}");
+    ok(&env, &["--build-only"]);
+    assert!(!installed.exists());
+
+    ok(&env, &["--yes"]);
+    assert_eq!(fs::read_to_string(&installed).unwrap(), "v1\n");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(&installed).unwrap().permissions().mode() & 0o777, 0o755);
+
+    fs::remove_file(&installed).unwrap();
+    ok(&env, &["--rc", "--yes"]);
+    assert!(installed.exists());
+    fs::remove_file(&installed).unwrap();
+    ok(&env, &["--release", "--yes"]);
+    assert!(!installed.exists(), "--release builds nothing, so installs nothing");
+}
+
+#[test]
+fn installs_a_binary_ci_published() {
+    let env = setup_with(
+        r#"
+name: Demo
+version: { preset: cargo }
+changelog: { wip_marker: WIP }
+release:
+  install:
+    bin_dir: ../bin-out
+    binaries: [{ asset: demo-macos.tar.gz, path: demo/bin/demo }]
+build:
+  - kind: github-tag-push
+    workflow: release.yml
+"#,
+    );
+    // What the workflow would have published.
+    let files = env.gh.state.join("files");
+    fs::create_dir_all(files.join("demo/bin")).unwrap();
+    fs::write(files.join("demo/bin/demo"), "ci\n").unwrap();
+    let tar = Command::new("tar").current_dir(&files).args(["czf", "demo-macos.tar.gz", "demo"]).status().unwrap();
+    assert!(tar.success());
+    fs::write(
+        env.gh.state.join("v0.1.0-pre.json"),
+        r#"{"isPrerelease":true,"isDraft":false,"assets":[{"name":"demo-macos.tar.gz"},{"name":"demo-linux.tar.gz"}],"url":"https://x/v0.1.0-pre"}"#,
+    )
+    .unwrap();
+    ok(&env, &["--yes"]);
+    assert!(gh_log(&env).contains("release download v0.1.0-pre --pattern demo-macos.tar.gz"));
+    assert_eq!(fs::read_to_string(env.work.join("../bin-out/demo")).unwrap(), "ci\n");
 }
 
 /// One product of a repository with several: `release -C products/p` on

@@ -206,6 +206,8 @@ pub struct ReleaseCfg {
     /// Mark the promoted release as GitHub's "Latest". False in a repository
     /// with several products, so "latest" never points at the wrong one.
     pub latest: bool,
+    /// What a `release` or `--rc` installs on this Mac once it is published.
+    pub install: InstallCfg,
 }
 
 impl Default for ReleaseCfg {
@@ -217,8 +219,40 @@ impl Default for ReleaseCfg {
             extra_assets: vec![],
             post_release: vec![],
             latest: true,
+            install: InstallCfg::default(),
         }
     }
+}
+
+/// Installing the published build on the Mac that ran the release, from the
+/// very assets a download would give: the .app of every .dmg asset, and the
+/// binaries listed here.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct InstallCfg {
+    /// Install the .app of each .dmg asset into `apps_dir`.
+    pub apps: bool,
+    pub apps_dir: PathBuf,
+    /// Command-line binaries to install into `bin_dir`.
+    pub binaries: Vec<BinaryInstall>,
+    /// A leading "~/" is the home directory.
+    pub bin_dir: PathBuf,
+}
+
+impl Default for InstallCfg {
+    fn default() -> Self {
+        Self { apps: true, apps_dir: "/Applications".into(), binaries: vec![], bin_dir: "~/.local/bin".into() }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryInstall {
+    /// Asset name; `*` matches any run of characters. Must match exactly one.
+    pub asset: String,
+    /// The binary's path inside the asset when that is a .tar.gz, .tgz, .tar
+    /// or .zip archive; without it the asset itself is the binary.
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,7 +488,7 @@ build:
 }
 
 /// `pattern` matches `text`, where `*` stands for any run of characters.
-fn glob_match(pattern: &str, text: &str) -> bool {
+pub fn glob_match(pattern: &str, text: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     if parts.len() == 1 {
         return pattern == text;
@@ -499,6 +533,8 @@ mod branch_tests {
         assert!(c.is_trunk_release_branch("main") && c.is_trunk_release_branch("p/1.2.x"));
         assert!(!c.is_trunk_release_branch("feature"));
         let d = Config::parse("name: P\nversion: { preset: cargo }\n").unwrap();
+        let i = &d.release.install;
+        assert!(i.apps && i.binaries.is_empty() && i.bin_dir == Path::new("~/.local/bin"));
         assert_eq!((d.tag_prefix.as_str(), d.branching, d.release.latest), ("", Branching::Dev, true));
     }
 }

@@ -34,6 +34,11 @@ release:
   commit_trailer: |-
     skip-ci: identical to the already-built pre-release
     [skip ci]
+  # The signed + notarized `sde` from CI's macOS tarball goes into
+  # ~/.local/bin after `release` / `--rc` (the .pkg needs sudo to install).
+  install:
+    binaries:
+      - { asset: sharpdx-macos-arm64.tar.gz, path: sharpdx-macos-arm64/bin/sde }
 
 build:
   - kind: github-tag-push

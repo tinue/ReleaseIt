@@ -12,7 +12,7 @@ use crate::config::{Branching, BuildStep};
 use crate::ctx::Ctx;
 use crate::git::{self, StashGuard};
 use crate::ui;
-use crate::{appstore, gh, sh};
+use crate::{appstore, gh, install, sh};
 use anyhow::{Context, Result, bail};
 
 pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
@@ -70,7 +70,7 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
         &ctx.release_notes()?,
     );
     println!("Build plan:");
-    for line in build::describe(ctx) {
+    for line in build::describe(ctx).into_iter().chain(install::describe(ctx)) {
         println!("  • {line}");
     }
     let kind = if rc { "release candidate" } else { "pre-release (CHANGELOG entry stays open)" };
@@ -101,6 +101,10 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     let r = gh::view(&ctx.pre_tag)
         .with_context(|| format!("the build finished but there is no GitHub release '{}'", ctx.pre_tag))?;
     println!("Done.  Pre-release {}: {}  ({} assets)", ctx.pre_tag, r.url, r.assets.len());
+    let published: Vec<String> =
+        r.assets.iter().filter_map(|a| Some(a.get("name")?.as_str()?.to_owned())).collect();
+    install::run(ctx, &assets, &published, work.path())
+        .context("the release is published, but installing it on this Mac failed")?;
     super::post_release(ctx)
 }
 
