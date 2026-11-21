@@ -116,6 +116,12 @@ release:
   extra_assets:                  # zipped from the working tree at pre-release time
     - { zip: examples/, as: MyApp-examples.zip }
   post_release: []               # shell commands run after release, --rc and --release, see below
+  install:                       # installs the build on this Mac after release and --rc, see below
+    apps: true                   # the .app of every .dmg asset
+    apps_dir: /Applications
+    binaries:                    # command-line tools, from an archive asset (or the asset itself)
+      - { asset: "myapp-macos-*.tar.gz", path: myapp-macos/bin/myapp }
+    bin_dir: ~/.local/bin
 
 build: []                        # build steps, see below
 
@@ -143,6 +149,20 @@ successful `release`, `release --rc` or `release --release` does, not in
 build, so a command that uses build output finds the last build there, normally
 the release candidate. If a command fails, `release` reports it and exits with
 an error, but the release stays published.
+
+`install`: once `release` or `release --rc` has published the pre-release,
+the build is installed on the Mac that ran it, from the published assets
+themselves: the file this run built, or, for an asset only CI produced (e.g.
+`github-tag-push`), downloaded from the pre-release. The `.app` of every
+`.dmg` asset goes into `apps_dir`, the app a later download of the DMG would
+give; it must pass `codesign --verify` and Gatekeeper (`spctl`), a running copy
+is quit first and started again afterwards. Each `binaries` entry names one
+asset (`*` matches any run of characters) and, for a `.tar.gz`, `.tgz`,
+`.tar` or `.zip`, the binary's `path` inside it; it is installed into `bin_dir`
+under its own name. `--release` builds nothing and installs nothing, nor do
+`--build-only` and `--dry-run` (which lists the installs in the build plan).
+`apps: false` turns the DMG install off. A failed install leaves the release
+published and runs no `post_release` command.
 
 ### Build steps
 

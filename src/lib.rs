@@ -7,6 +7,7 @@ pub mod config;
 pub mod ctx;
 pub mod gh;
 pub mod git;
+pub mod install;
 pub mod modes;
 pub mod sh;
 pub mod ui;
