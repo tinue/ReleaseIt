@@ -101,8 +101,9 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     let r = gh::view(&ctx.pre_tag)
         .with_context(|| format!("the build finished but there is no GitHub release '{}'", ctx.pre_tag))?;
     println!("Done.  Pre-release {}: {}  ({} assets)", ctx.pre_tag, r.url, r.assets.len());
-    let published: Vec<String> =
-        r.assets.iter().filter_map(|a| Some(a.get("name")?.as_str()?.to_owned())).collect();
+    // What this run built; only a release CI published itself is installed
+    // from its assets.
+    let published = if assets.is_empty() { r.asset_names() } else { Vec::new() };
     install::run(ctx, &assets, &published, work.path())?;   // a failed install only warns
     super::post_release(ctx)
 }

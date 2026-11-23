@@ -52,7 +52,8 @@ started there.
    the end). The CHANGELOG must have a non-empty `## [X.Y.Z]` section; it stays
    open (`- work in progress`). Pushes the disposable `vX.Y.Z-pre` tag (moved
    with `-f` on every re-cut), runs the build steps and publishes all assets to
-   the GitHub pre-release of that tag.
+   the GitHub pre-release of that tag. A re-cut replaces the assets: one an
+   earlier run uploaded and this build does not have is removed.
 2. **`release --rc`**: the same, but first replaces the open header
    (`## [X.Y.Z] - <wip_marker>` or a bare `## [X.Y.Z]`) with today's date,
    commits and pushes. A date already there is never overwritten.
@@ -151,9 +152,9 @@ the release candidate. If a command fails, `release` reports it and exits with
 an error, but the release stays published.
 
 `install`: once `release` or `release --rc` has published the pre-release,
-the build is installed on the Mac that ran it, from the published assets
-themselves: the file this run built, or, for an asset only CI produced (e.g.
-`github-tag-push`), downloaded from the pre-release. The `.app` of every
+the build is installed on the Mac that ran it, from this build's assets: the
+files this run built, or, when CI published the release itself
+(`github-tag-push`), downloaded from the pre-release. The `.app` of every
 `.dmg` asset goes into `apps_dir`, the app a later download of the DMG would
 give; it must pass `codesign --verify` and Gatekeeper (`spctl`), a running copy
 is quit first and started again afterwards (the app must be gone within 10
