@@ -66,17 +66,34 @@ pub fn run(ctx: &Ctx, local: &[PathBuf], published: &[String], work: &Path) -> R
         Ok(downloads.join(name))
     };
 
+    // The release is published by now: a failed install is a warning, and
+    // the other assets are still installed.
+    let mut failed = 0;
+    let mut warn = |what: &str, r: Result<()>| {
+        if let Err(e) = r {
+            eprintln!("Warning: {what} was not installed on this Mac: {e:#}");
+            failed += 1;
+        }
+    };
     if i.apps {
         for name in names.iter().filter(|n| is_dmg(n)) {
-            install_app(&fetch(name)?, &expand_home(&i.apps_dir)?, work)?;
+            warn(name, (|| install_app(&fetch(name)?, &expand_home(&i.apps_dir)?, work))());
         }
     }
     for b in &i.binaries {
         let matches: Vec<&String> = names.iter().filter(|n| glob_match(&b.asset, n)).collect();
-        let [name] = matches.as_slice() else {
-            bail!("install.binaries: asset '{}' matched {} assets, expected exactly 1", b.asset, matches.len());
+        let r = match matches.as_slice() {
+            [name] => (|| install_binary(&fetch(name)?, b, &expand_home(&i.bin_dir)?, work))(),
+            _ => Err(anyhow::anyhow!(
+                "install.binaries: asset '{}' matched {} assets, expected exactly 1",
+                b.asset,
+                matches.len()
+            )),
         };
-        install_binary(&fetch(name)?, b, &expand_home(&i.bin_dir)?, work)?;
+        warn(&b.asset, r);
+    }
+    if failed > 0 {
+        eprintln!("Warning: {failed} of this release's apps and binaries are not installed on this Mac (see above).");
     }
     Ok(())
 }
@@ -140,7 +157,9 @@ fn install_app(dmg: &Path, apps_dir: &Path, work: &Path) -> Result<()> {
     let was_running = is_running(&bundle_id);
     if was_running {
         println!("Quitting {name}…");
-        sh::run("osascript", &["-e", &format!("tell application id \"{bundle_id}\" to quit")])?;
+        // Qt apps answer the quit event with "user canceled" (-128) and quit
+        // right after, so osascript's status says nothing: the loop decides.
+        let _ = sh::succeeds("osascript", &["-e", &format!("tell application id \"{bundle_id}\" to quit")]);
         for _ in 0..20 {
             if !is_running(&bundle_id) {
                 break;

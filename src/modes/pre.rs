@@ -103,8 +103,7 @@ pub fn run(ctx: &Ctx, rc: bool) -> Result<()> {
     println!("Done.  Pre-release {}: {}  ({} assets)", ctx.pre_tag, r.url, r.assets.len());
     let published: Vec<String> =
         r.assets.iter().filter_map(|a| Some(a.get("name")?.as_str()?.to_owned())).collect();
-    install::run(ctx, &assets, &published, work.path())
-        .context("the release is published, but installing it on this Mac failed")?;
+    install::run(ctx, &assets, &published, work.path())?;   // a failed install only warns
     super::post_release(ctx)
 }
 
