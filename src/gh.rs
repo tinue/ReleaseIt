@@ -16,6 +16,12 @@ pub struct Release {
     pub url: String,
 }
 
+impl Release {
+    pub fn asset_names(&self) -> Vec<String> {
+        self.assets.iter().filter_map(|a| Some(a.get("name")?.as_str()?.to_owned())).collect()
+    }
+}
+
 pub fn require() -> Result<()> {
     sh::require_tool("gh", "Install with: brew install gh  (then: gh auth login)")
 }
@@ -45,6 +51,13 @@ pub fn publish_pre(ctx: &Ctx, assets: &[&str]) -> Result<()> {
             args.extend_from_slice(assets);
             args.push("--clobber");
             ctx.run("gh", &args)?;
+            // The pre-release holds exactly this build: an asset an earlier
+            // run uploaded under another name would be offered (and
+            // installed) next to the new one.
+            for stale in stale_assets(&view(&ctx.pre_tag).map(|r| r.asset_names()).unwrap_or_default(), assets) {
+                println!("Removing {stale} (not part of this build)…");
+                ctx.run("gh", &["release", "delete-asset", &ctx.pre_tag, &stale, "--yes"])?;
+            }
         }
     } else {
         println!("Creating GitHub pre-release {}…", ctx.pre_tag);
@@ -110,4 +123,24 @@ pub fn watch(run_id: u64, what: &str) -> Result<()> {
 
 pub fn download(run_id: u64, dir: &Path) -> Result<()> {
     sh::run("gh", &["run", "download", &run_id.to_string(), "-D", sh::path_str(dir)?])
+}
+
+/// The published asset names that none of `uploaded` (paths) carries.
+pub fn stale_assets(published: &[String], uploaded: &[&str]) -> Vec<String> {
+    let names: Vec<&str> =
+        uploaded.iter().map(|p| std::path::Path::new(p).file_name().and_then(|f| f.to_str()).unwrap_or(p)).collect();
+    published.iter().filter(|n| !names.contains(&n.as_str())).cloned().collect()
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::stale_assets;
+
+    #[test]
+    fn only_assets_this_build_did_not_upload() {
+        let published = vec!["App-3.0.0.dmg".to_owned(), "App-mac-aarch64.dmg".to_owned(), "App-web.zip".to_owned()];
+        let uploaded = ["/tmp/x/App-mac-aarch64.dmg", "/tmp/x/App-web.zip"];
+        assert_eq!(stale_assets(&published, &uploaded), vec!["App-3.0.0.dmg".to_owned()]);
+        assert!(stale_assets(&published[1..], &uploaded).is_empty());
+    }
 }

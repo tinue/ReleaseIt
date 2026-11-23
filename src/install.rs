@@ -1,6 +1,6 @@
 //! After `release` / `release --rc` has published: install the build on this
-//! Mac, from the published assets themselves — the local file when this run
-//! built it, otherwise downloaded from the GitHub release. The .app of every
+//! Mac, from the assets of this build — the local files this run built, or,
+//! when CI published the release itself, downloaded from the GitHub release. The .app of every
 //! .dmg asset goes into `apps_dir` (exactly the app a later download of the
 //! DMG would give), each configured binary into `bin_dir`.
 
@@ -40,7 +40,9 @@ fn produces_dmg(ctx: &Ctx) -> bool {
 }
 
 /// `local`: the assets this run built; `published`: the asset names of the
-/// GitHub pre-release; `work`: scratch space for downloads and mounts.
+/// GitHub pre-release, given only when CI published it (no `local`), never
+/// to add to `local`: an asset an earlier run left there is not this build;
+/// `work`: scratch space for downloads and mounts.
 pub fn run(ctx: &Ctx, local: &[PathBuf], published: &[String], work: &Path) -> Result<()> {
     let i = &ctx.cfg.release.install;
     if !cfg!(target_os = "macos") {
