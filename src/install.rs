@@ -140,7 +140,9 @@ fn install_app(dmg: &Path, apps_dir: &Path, work: &Path) -> Result<()> {
     let was_running = is_running(&bundle_id);
     if was_running {
         println!("Quitting {name}…");
-        sh::run("osascript", &["-e", &format!("tell application id \"{bundle_id}\" to quit")])?;
+        // Qt apps answer the quit event with "user canceled" (-128) and quit
+        // right after, so osascript's status says nothing: the loop decides.
+        let _ = sh::succeeds("osascript", &["-e", &format!("tell application id \"{bundle_id}\" to quit")]);
         for _ in 0..20 {
             if !is_running(&bundle_id) {
                 break;
