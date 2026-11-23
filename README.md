@@ -156,13 +156,18 @@ themselves: the file this run built, or, for an asset only CI produced (e.g.
 `github-tag-push`), downloaded from the pre-release. The `.app` of every
 `.dmg` asset goes into `apps_dir`, the app a later download of the DMG would
 give; it must pass `codesign --verify` and Gatekeeper (`spctl`), a running copy
-is quit first and started again afterwards. Each `binaries` entry names one
+is quit first and started again afterwards (the app must be gone within 10
+s; macOS's answer to the quit request is not taken into account, since Qt apps
+answer "user canceled" and quit right after). Each `binaries` entry names one
 asset (`*` matches any run of characters) and, for a `.tar.gz`, `.tgz`,
 `.tar` or `.zip`, the binary's `path` inside it; it is installed into `bin_dir`
 under its own name. `--release` builds nothing and installs nothing, nor do
 `--build-only` and `--dry-run` (which lists the installs in the build plan).
-`apps: false` turns the DMG install off. A failed install leaves the release
-published and runs no `post_release` command.
+`apps: false` turns the DMG install off. An app or binary that cannot be
+installed is a warning (`Warning: <asset> was not installed on this Mac: …`,
+then how many were not), not an error: the release is published, the other
+assets are still installed, `post_release` runs, and `release` ends
+successfully.
 
 ### Build steps
 
