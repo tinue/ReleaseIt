@@ -252,13 +252,13 @@ mod tests {
         let cfg = ChangelogCfg {
             wip_marker: "WIP".into(),
             insert_next: InsertNext::AfterUnreleased,
-            compare_links: Some("https://github.com/tinue/SharpDataExchange".into()),
+            compare_links: Some("https://github.com/tinue/Sharp-Data-Exchange".into()),
             ..Default::default()
         };
-        let t = "# C\n\n## [Unreleased]\n\n## [0.3.6] - 2026-10-20\n- a\n\n[Unreleased]: https://github.com/tinue/SharpDataExchange/compare/v0.3.6...HEAD\n[0.3.6]: https://github.com/tinue/SharpDataExchange/compare/v0.3.5...v0.3.6\n";
+        let t = "# C\n\n## [Unreleased]\n\n## [0.3.6] - 2026-10-20\n- a\n\n[Unreleased]: https://github.com/tinue/Sharp-Data-Exchange/compare/v0.3.6...HEAD\n[0.3.6]: https://github.com/tinue/Sharp-Data-Exchange/compare/v0.3.5...v0.3.6\n";
         let s = insert_next(t, &cfg, "", "0.3.6", "0.3.7").unwrap();
         assert!(s.contains("## [Unreleased]\n\n## [0.3.7] - WIP\n\n## [0.3.6]"));
-        assert!(s.contains("[Unreleased]: https://github.com/tinue/SharpDataExchange/compare/v0.3.7...HEAD\n[0.3.7]: https://github.com/tinue/SharpDataExchange/compare/v0.3.6...v0.3.7\n[0.3.6]:"));
+        assert!(s.contains("[Unreleased]: https://github.com/tinue/Sharp-Data-Exchange/compare/v0.3.7...HEAD\n[0.3.7]: https://github.com/tinue/Sharp-Data-Exchange/compare/v0.3.6...v0.3.7\n[0.3.6]:"));
         assert!(insert_next("# C\n", &cfg, "", "1", "2").is_err());
     }
 

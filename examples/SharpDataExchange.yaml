@@ -15,7 +15,7 @@ version:
 changelog:
   wip_marker: WIP
   insert_next: after-unreleased
-  compare_links: https://github.com/tinue/SharpDataExchange
+  compare_links: https://github.com/tinue/Sharp-Data-Exchange
 
 next:
   bump: patch
